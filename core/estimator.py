@@ -15,6 +15,7 @@ returns just the byte count — useful for updating the UI size readout while
 the slider is being dragged, without writing any file.
 """
 import io
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -50,6 +51,11 @@ def estimate_image(file_info: FileInfo) -> Path:
     )
     tmp_path = Path(tmp.name)
     tmp.close()
+
+    # No compression needed — copy original unchanged
+    if file_info.target_size >= source.stat().st_size:
+        shutil.copy2(source, tmp_path)
+        return tmp_path
 
     with Image.open(source) as img:
         if ext in (".jpg", ".jpeg"):
@@ -113,6 +119,24 @@ def estimate_video(file_info: FileInfo) -> Path:
         Path to the temporary .mp4 file (caller must delete when done).
     """
     source = file_info.path
+
+    # No compression needed — clip the original directly at full quality
+    if file_info.target_size >= source.stat().st_size:
+        tmp = tempfile.NamedTemporaryFile(
+            suffix=".mp4", delete=False, prefix="shrinkbox_preview_"
+        )
+        tmp_path = Path(tmp.name)
+        tmp.close()
+        metadata = get_video_metadata(source)
+        duration = get_duration_seconds(metadata)
+        clip_duration = min(PREVIEW_CLIP_SECONDS, duration)
+        run_ffmpeg([
+            "-y", "-i", str(source),
+            "-t", str(clip_duration),
+            "-c", "copy",
+            str(tmp_path),
+        ])
+        return tmp_path
 
     tmp = tempfile.NamedTemporaryFile(
         suffix=".mp4", delete=False, prefix="shrinkbox_preview_"
