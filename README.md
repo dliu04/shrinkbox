@@ -38,8 +38,13 @@ Shrinkbox is a Windows desktop app built with Python + PyQt6. You pick a source 
 ---
 
 ## Screenshots / Quick Tour
+<img width="1033" height="705" alt="image" src="https://github.com/user-attachments/assets/10410566-ef73-4c29-8136-c4b44f6c3250" />
 
-> _Screenshots can go here once the app is running._
+> _Compress entire folders of images and videos to hit a target size._
+
+<img width="1033" height="705" alt="image" src="https://github.com/user-attachments/assets/d69198e1-3ecf-4f5c-8a89-526c25911a82" />
+
+> _Compress with confidence with a live preview before you start compressing._
 
 | Step | What you do |
 |------|-------------|
