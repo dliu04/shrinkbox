@@ -158,6 +158,7 @@ def estimate_video(file_info: FileInfo) -> Path:
         "-t", str(clip_duration),
         "-c:v", "libx264",
         "-b:v", f"{video_kbps}k",
+        "-preset", "slow",
         "-c:a", "aac",
         "-b:a", f"{AUDIO_BITRATE_KBPS}k",
         str(tmp_path),
