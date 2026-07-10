@@ -26,7 +26,7 @@ OS will reclaim the temp files on the next reboot at the latest.
 import copy
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
@@ -315,10 +315,19 @@ class PreviewPanel(QWidget):
 
     def _on_apply(self) -> None:
         if self._fi:
-            self.quality_accepted.emit(
-                self._fi.target_size,
-                self._apply_all_check.isChecked(),
-            )
+            apply_to_all = self._apply_all_check.isChecked()
+            self.quality_accepted.emit(self._fi.target_size, apply_to_all)
+
+            # Brief visual confirmation on the button
+            confirm = "✓ Applied to all" if apply_to_all else "✓ Applied"
+            self._apply_btn.setText(confirm)
+            self._apply_btn.setEnabled(False)
+            QTimer.singleShot(1500, self._restore_apply_btn)
+
+    def _restore_apply_btn(self) -> None:
+        apply_to_all = self._apply_all_check.isChecked()
+        self._apply_btn.setText("Apply to all" if apply_to_all else "Apply")
+        self._apply_btn.setEnabled(True)
 
     # ── encode worker lifecycle ───────────────────────────────────────────────
 

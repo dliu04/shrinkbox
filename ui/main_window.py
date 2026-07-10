@@ -365,11 +365,47 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No output folder",
                                 "Please specify an output folder before compressing.")
             return
-        # Replaced in Phase 5 with ProgressDialog + CompressionWorker
-        QMessageBox.information(
-            self, "Compress — coming soon",
-            "The compression worker will be available in Phase 5.",
+
+        input_str = self._input_edit.text().strip()
+        source_folder = Path(input_str) if input_str else None
+        if not source_folder or not source_folder.is_dir():
+            QMessageBox.warning(self, "Invalid source folder",
+                                "The source folder is no longer valid. Please re-scan.")
+            return
+
+        output_folder = Path(output_str)
+
+        # Warn if the output folder already has content
+        if output_folder.exists() and output_folder.is_dir():
+            try:
+                has_content = any(output_folder.iterdir())
+            except OSError:
+                has_content = False
+            if has_content:
+                reply = QMessageBox.question(
+                    self, "Output folder not empty",
+                    f"The output folder already contains files:\n{output_folder}\n\n"
+                    "Files with the same names will be overwritten.  Continue?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+
+        from core.worker import CompressionWorker
+        from ui.progress_dialog import ProgressDialog
+
+        worker = CompressionWorker(
+            files=self._files,
+            source_folder=source_folder,
+            output_folder=output_folder,
         )
+        dlg = ProgressDialog(worker, parent=self)
+        worker.start()
+        dlg.exec()
+        # Ensure worker is fully done before the dialog goes out of scope
+        if not worker.isFinished():
+            worker.wait()
 
     # ── table helpers ─────────────────────────────────────────────────────────
 
