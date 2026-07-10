@@ -53,9 +53,11 @@ def get_video_metadata(path: str | Path) -> dict:
     try:
         result = subprocess.run(
             cmd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=30,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except FileNotFoundError:
         raise RuntimeError("ffprobe was not found on PATH.")
@@ -103,9 +105,11 @@ def run_ffmpeg(
     try:
         result = subprocess.run(
             cmd,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
         )
     except FileNotFoundError:
         raise RuntimeError("ffmpeg was not found on PATH.")

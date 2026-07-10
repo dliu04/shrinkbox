@@ -99,13 +99,21 @@ The repo ships with a ready-made PyInstaller spec (`shrinkbox.spec`) that bundle
 ### 1 — Get ffmpeg binaries for bundling
 
 Download `ffmpeg-master-latest-win64-gpl.zip` from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases).  
-Copy `ffmpeg.exe` and `ffprobe.exe` into a `bin\` folder at the project root:
+Copy **all files** from inside the zip's `bin\` folder into a `bin\` folder at the project root — this includes `ffmpeg.exe`, `ffprobe.exe`, and all `av*.dll` / `sw*.dll` shared libraries:
 
 ```
 shrinkbox\
   bin\
     ffmpeg.exe
     ffprobe.exe
+    avcodec-*.dll
+    avformat-*.dll
+    avutil-*.dll
+    swscale-*.dll
+    swresample-*.dll
+    avfilter-*.dll
+    avdevice-*.dll
+    postproc-*.dll    ← copy everything; the spec globs bin\* automatically
   main.py
   shrinkbox.spec
   ...

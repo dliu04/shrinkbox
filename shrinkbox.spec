@@ -3,11 +3,10 @@
 # Prerequisites
 # -------------
 # 1. pip install pyinstaller>=6.0
-# 2. Place bin\ffmpeg.exe and bin\ffprobe.exe in the project root.
-#    Download a Windows static build from:
-#      https://github.com/BtbN/FFmpeg-Builds/releases
-#    (grab the *-win64-lgpl-shared or *-win64-gpl-shared essentials zip,
-#     extract, and copy ffmpeg.exe + ffprobe.exe into bin\)
+# 2. Place bin\ffmpeg.exe, bin\ffprobe.exe, AND all av*.dll / sw*.dll files
+#    from the BtbN release into the project bin\ folder.
+#    Download from https://github.com/BtbN/FFmpeg-Builds/releases
+#    (grab the *-win64-gpl.zip, extract, copy everything from its bin\ folder)
 #
 # Build
 # -----
@@ -17,15 +16,38 @@
 # ------
 #   dist\Shrinkbox\Shrinkbox.exe   ← launch this (or zip the whole folder)
 
+import glob
+import os
+
+# ── ffmpeg CLI DLLs (from bin\) ───────────────────────────────────────────────
+# BtbN shared builds ship avcodec-*.dll etc. alongside the exes.
+# Glob everything in bin\ so new DLL versions are picked up automatically.
+_bin_files = [
+    (f.replace('\\', '/'), '.')
+    for f in glob.glob(os.path.join('bin', '*'))
+    if os.path.isfile(f)
+]
+
+# ── PyQt6 multimedia DLLs ─────────────────────────────────────────────────────
+# QMediaPlayer loads these at runtime via Qt's FFmpeg multimedia backend.
+# PyInstaller doesn't collect them automatically.
+try:
+    import PyQt6 as _pyqt6
+    _qt_bin = os.path.join(os.path.dirname(_pyqt6.__file__), 'Qt6', 'bin')
+    _qt_mm_dlls = [
+        (f.replace('\\', '/'), '.')
+        for pattern in ('av*.dll', 'sw*.dll', 'postproc*.dll')
+        for f in glob.glob(os.path.join(_qt_bin, pattern))
+    ]
+except Exception:
+    _qt_mm_dlls = []
+
 block_cipher = None
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[
-        ('bin/ffmpeg.exe',  '.'),   # extracted to root of dist\Shrinkbox\
-        ('bin/ffprobe.exe', '.'),
-    ],
+    binaries=_bin_files + _qt_mm_dlls,
     datas=[],
     hiddenimports=[],
     hookspath=[],
