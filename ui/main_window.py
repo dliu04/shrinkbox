@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
 
 from core.budget import distribute_budget
 from core.file_scanner import FileInfo, MediaType, scan_folder
+from core.video_compressor import MIN_VIDEO_BITRATE_KBPS as _MIN_VIDEO_BITRATE_KBPS
 from utils.size_utils import human_readable
 
 _SETTINGS_ORG = "shrinkbox"
@@ -55,6 +56,11 @@ _COL_STATUS = 5
 
 _STATUS_READY = "Ready"
 _STATUS_SKIPPED = "Already small"
+_STATUS_ENCODING = "Encoding…"
+_STATUS_DONE = "✓ Done"
+_STATUS_COPIED = "Copied"
+_STATUS_ERROR = "⚠ Error"
+_STATUS_LOW_BITRATE = "⚠ Bitrate too low"
 
 
 class MainWindow(QMainWindow):
@@ -392,6 +398,27 @@ class MainWindow(QMainWindow):
                 if reply != QMessageBox.StandardButton.Yes:
                     return
 
+        # Pre-flight: warn about videos whose targets are too small to compress
+        undershoots = self._check_low_bitrate_videos(self._files)
+        if undershoots:
+            lines = "\n".join(
+                f"  \u2022 {f.path.name}  ({kbps}\u202fkbps computed, "
+                f"{_MIN_VIDEO_BITRATE_KBPS}\u202fkbps minimum)"
+                for f, kbps in undershoots
+            )
+            reply = QMessageBox.warning(
+                self, "Some videos can\u2019t reach their target size",
+                f"{len(undershoots)} video file(s) have a target that is too small "
+                f"to compress:\n\n{lines}\n\n"
+                "These files will be copied unchanged at their original size.\n"
+                "To fix: raise the \u2018Target MB\u2019 value or adjust individual "
+                "targets in the preview panel.\n\nContinue anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
         from core.worker import CompressionWorker
         from ui.progress_dialog import ProgressDialog
 
@@ -400,6 +427,22 @@ class MainWindow(QMainWindow):
             source_folder=source_folder,
             output_folder=output_folder,
         )
+
+        # Live table status updates from worker signals
+        worker.file_started.connect(
+            lambda idx: self._set_file_status(idx, _STATUS_ENCODING)
+        )
+        worker.file_done.connect(
+            lambda idx, size: self._set_file_status(
+                idx,
+                _STATUS_COPIED if self._files[idx].target_size >= self._files[idx].original_size
+                else _STATUS_DONE,
+            )
+        )
+        worker.file_error.connect(
+            lambda idx, _msg: self._set_file_status(idx, _STATUS_ERROR)
+        )
+
         dlg = ProgressDialog(worker, parent=self)
         worker.start()
         dlg.exec()
@@ -407,7 +450,48 @@ class MainWindow(QMainWindow):
         if not worker.isFinished():
             worker.wait()
 
+        # Reset status column so the table is ready for another run
+        self._reset_table_status()
+
     # ── table helpers ─────────────────────────────────────────────────────────
+
+    # ── status column helpers ─────────────────────────────────────────────────
+
+    def _set_file_status(self, row: int, text: str) -> None:
+        item = self._table.item(row, _COL_STATUS)
+        if item:
+            item.setText(text)
+
+    def _reset_table_status(self) -> None:
+        """Restore every row's Status cell to Ready / Already-small after a run."""
+        for row, f in enumerate(self._files):
+            status = _STATUS_SKIPPED if f.target_size >= f.original_size else _STATUS_READY
+            self._set_file_status(row, status)
+
+    # ── pre-flight helpers ────────────────────────────────────────────────────
+
+    def _check_low_bitrate_videos(
+        self, files: list[FileInfo]
+    ) -> list[tuple["FileInfo", int]]:
+        """Return (FileInfo, computed_kbps) for videos that would fall below MIN bitrate."""
+        from core.video_compressor import compute_video_bitrate
+        from utils.ffmpeg_utils import get_duration_seconds, get_video_metadata
+
+        undershoots: list[tuple[FileInfo, int]] = []
+        for f in files:
+            if f.media_type != MediaType.VIDEO:
+                continue
+            if f.target_size >= f.original_size:
+                continue  # will be copied regardless
+            try:
+                meta = get_video_metadata(f.path)
+                dur = get_duration_seconds(meta)
+                kbps = compute_video_bitrate(f.target_size, dur)
+                if kbps < _MIN_VIDEO_BITRATE_KBPS:
+                    undershoots.append((f, kbps))
+            except Exception:  # noqa: BLE001
+                pass
+        return undershoots
 
     def _populate_table(self) -> None:
         self._table.setRowCount(0)
