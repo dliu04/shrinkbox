@@ -82,7 +82,7 @@ Download a Windows static build from [BtbN/FFmpeg-Builds](https://github.com/Btb
 ### Clone and install
 
 ```powershell
-git clone https://github.com/YOUR_USERNAME/shrinkbox.git
+git clone https://github.com/dliu04/shrinkbox.git
 cd shrinkbox
 python -m venv .venv
 .venv\Scripts\activate
