@@ -2,8 +2,16 @@
 main.py — Shrinkbox entry point
 """
 import sys
+from pathlib import Path
 
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QMessageBox
+
+
+def _resource_path(relative: str) -> Path:
+    """Resolve a resource path whether running from source or a PyInstaller bundle."""
+    base = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
+    return base / relative
 
 
 def _show_missing_deps_error(missing: list[str]) -> None:
@@ -28,6 +36,7 @@ def main() -> None:
     app.setApplicationName("Shrinkbox")
     app.setApplicationVersion("0.1.0")
     app.setOrganizationName("shrinkbox")
+    app.setWindowIcon(QIcon(str(_resource_path("resources/icon.ico"))))
 
     # Gate on ffmpeg/ffprobe before touching anything else
     from utils.ffmpeg_utils import check_dependencies

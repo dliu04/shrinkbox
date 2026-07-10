@@ -48,7 +48,9 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=_bin_files + _qt_mm_dlls,
-    datas=[],
+    datas=[
+        ('resources/icon.ico', 'resources'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -76,6 +78,7 @@ exe = EXE(
     console=False,      # no terminal window
     disable_windowed_traceback=False,
     target_arch=None,
+    icon='resources/icon.ico',
 )
 
 coll = COLLECT(

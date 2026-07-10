@@ -235,3 +235,9 @@ See [LICENSE](LICENSE) for the full text.
 
 **Why GPL v3?** Shrinkbox uses [PyQt6](https://www.riverbankcomputing.com/software/pyqt/), which is licensed under GPL v3. Any application that links against PyQt6 must also be GPL v3 (or hold a commercial Riverbank Computing license). The bundled ffmpeg binaries are built with GPL codecs (libx264); their source is available from the [FFmpeg project](https://ffmpeg.org/).
 
+---
+
+## Acknowledgements
+
+**App icon** — "Box" by [Sergei Kokota](https://icon-icons.com/authors/219-sergei-kokota), from the [Office Vol.7 Icons](https://icon-icons.com/pack/office-vol7icons/945) pack on [icon-icons.com](https://icon-icons.com/icon/box/73953). Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Converted to ICO format for use as the application icon.
+
