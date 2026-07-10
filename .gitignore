@@ -16,8 +16,10 @@ ffmpeg2pass-*.log.mbtree
 # Build / distribution
 dist/
 build/
-*.spec
 *.egg-info/
+
+# Bundled ffmpeg binaries (download separately — see README)
+bin/
 
 # IDE
 .vscode/

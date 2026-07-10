@@ -6,8 +6,23 @@ Wrappers around ffmpeg and ffprobe subprocess calls.
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
+
+def _ffmpeg_bin(name: str) -> str:
+    """
+    Resolve an ffmpeg/ffprobe binary path.
+
+    When running as a PyInstaller bundle (sys.frozen is True), prefer the
+    copy extracted alongside the exe (sys._MEIPASS).  Otherwise fall back
+    to whatever is on the system PATH.
+    """
+    if getattr(sys, "frozen", False):
+        candidate = Path(sys._MEIPASS) / f"{name}.exe"
+        if candidate.exists():
+            return str(candidate)
+    return name
 
 def check_dependencies() -> list[str]:
     """
@@ -16,7 +31,7 @@ def check_dependencies() -> list[str]:
     """
     missing = []
     for tool in ("ffmpeg", "ffprobe"):
-        if shutil.which(tool) is None:
+        if shutil.which(_ffmpeg_bin(tool)) is None:
             missing.append(tool)
     return missing
 
@@ -28,7 +43,7 @@ def get_video_metadata(path: str | Path) -> dict:
     Raises RuntimeError on failure (ffprobe not found, timeout, bad file).
     """
     cmd = [
-        "ffprobe",
+        _ffmpeg_bin("ffprobe"),
         "-v", "quiet",
         "-print_format", "json",
         "-show_streams",
@@ -84,7 +99,7 @@ def run_ffmpeg(
     Raises RuntimeError on non-zero exit or if ffmpeg is not found.
     Returns the CompletedProcess for inspection if needed.
     """
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"] + args
+    cmd = [_ffmpeg_bin("ffmpeg"), "-hide_banner", "-loglevel", "error"] + args
     try:
         result = subprocess.run(
             cmd,
