@@ -8,15 +8,17 @@ Layout
   [Input folder  ________________] [Browse]
   [Output folder ________________] [Browse]
   Target: [___] MB  [☐ Subfolders]          [Scan Folder]
-  ┌─────────────────────────────────────────────────────┐
-  │ Filename │ Type │ Original │ Target │ Savings │ Status│
-  │ …        │      │          │        │         │      │
-  └─────────────────────────────────────────────────────┘
+  ┌──────────────────────────────────────────────────┐ ↕ splitter
+  │ Filename │ Type │ Original │ Target │ Savings │ … │
+  ├──────────────────────────────────────────────────┤
+  │ Preview panel (image side-by-side OR video)      │
+  │ Slider · [☑ Apply to all] · [Apply]              │
+  └──────────────────────────────────────────────────┘
   [summary label]                   [Preview] [Compress All]
 """
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QTimer
 from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -29,6 +31,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSpinBox,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -59,6 +62,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._files: list[FileInfo] = []
         self._output_manually_set: bool = False
+        self._current_preview_row: int = -1
+        self._saved_splitter_sizes: list[int] = []
         self._setup_ui()
         self._restore_settings()
 
@@ -76,8 +81,27 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(14, 14, 14, 14)
 
         root.addWidget(self._build_controls())
-        root.addWidget(self._build_table(), stretch=1)
+        root.addWidget(self._build_files_header())
+
+        from ui.preview_panel import PreviewPanel
+        self._splitter = QSplitter(Qt.Orientation.Vertical)
+        self._splitter.setCollapsible(0, True)
+        self._splitter.addWidget(self._build_table())
+        self._preview_panel = PreviewPanel()
+        self._preview_panel.quality_accepted.connect(self._on_quality_accepted)
+        self._splitter.addWidget(self._preview_panel)
+        self._splitter.setStretchFactor(0, 3)
+        self._splitter.setStretchFactor(1, 2)
+        self._splitter.setCollapsible(1, True)
+
+        root.addWidget(self._splitter, stretch=1)
         root.addWidget(self._build_bottom_bar())
+
+        # Debounce timer — auto-preview fires 150 ms after selection settles
+        self._preview_debounce = QTimer(self)
+        self._preview_debounce.setSingleShot(True)
+        self._preview_debounce.setInterval(150)
+        self._preview_debounce.timeout.connect(self._trigger_auto_preview)
 
     def _build_controls(self) -> QWidget:
         box = QWidget()
@@ -172,12 +196,6 @@ class MainWindow(QMainWindow):
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
         )
 
-        self._preview_btn = QPushButton("Preview")
-        self._preview_btn.setEnabled(False)
-        self._preview_btn.setFixedWidth(90)
-        self._preview_btn.setToolTip("Preview compression quality for the selected file")
-        self._preview_btn.clicked.connect(self._on_preview)
-
         self._compress_btn = QPushButton("Compress All")
         self._compress_btn.setEnabled(False)
         self._compress_btn.setFixedWidth(120)
@@ -185,8 +203,23 @@ class MainWindow(QMainWindow):
         self._compress_btn.clicked.connect(self._on_compress_all)
 
         layout.addWidget(self._summary_label)
-        layout.addWidget(self._preview_btn)
         layout.addWidget(self._compress_btn)
+        return bar
+
+    def _build_files_header(self) -> QWidget:
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setSpacing(8)
+        self._files_header_lbl = QLabel("Files")
+        layout.addWidget(self._files_header_lbl)
+        layout.addStretch()
+        self._collapse_btn = QPushButton("▲  Hide table")
+        self._collapse_btn.setFlat(True)
+        self._collapse_btn.setFixedWidth(110)
+        self._collapse_btn.setToolTip("Collapse or expand the file list")
+        self._collapse_btn.clicked.connect(self._toggle_collapse_files)
+        layout.addWidget(self._collapse_btn)
         return bar
 
     # ── slots ─────────────────────────────────────────────────────────────────
@@ -253,27 +286,59 @@ class MainWindow(QMainWindow):
             )
             self._populate_table()
             self._compress_btn.setEnabled(False)
+            self._files_header_lbl.setText("Files  (0)")
             self._update_summary()
             return
 
         distribute_budget(files, self._target_spin.value())
         self._populate_table()
         self._update_summary()
+        self._files_header_lbl.setText(f"Files  ({len(files)})")
         self._compress_btn.setEnabled(True)
 
     def _on_selection_changed(self) -> None:
-        has_selection = self._table.currentRow() >= 0 and bool(self._files)
-        self._preview_btn.setEnabled(has_selection)
-
-    def _on_preview(self) -> None:
         row = self._table.currentRow()
+        if row >= 0 and self._files:
+            self._current_preview_row = row
+            self._preview_debounce.start()
+
+    def _on_quality_accepted(self, new_target: int, apply_to_all: bool) -> None:
+        row = self._current_preview_row
         if row < 0 or row >= len(self._files):
             return
-        # Replaced in Phase 4 with the real PreviewDialog
-        QMessageBox.information(
-            self, "Preview — coming soon",
-            "The preview dialog will be available in Phase 4.",
-        )
+        file_info = self._files[row]
+        if apply_to_all:
+            # Apply the same quality % proportionally to every file
+            quality_pct = new_target / max(1, file_info.original_size)
+            for f in self._files:
+                f.target_size = min(int(quality_pct * f.original_size), f.original_size)
+            self._refresh_targets()
+        else:
+            file_info.target_size = new_target
+            self._set_row(row, file_info)
+        self._update_summary()
+
+    def _trigger_auto_preview(self) -> None:
+        """Called by the debounce timer; loads the selected row into the preview panel."""
+        row = self._current_preview_row
+        if 0 <= row < len(self._files):
+            self._preview_panel.load_file(self._files[row])
+
+    def _toggle_collapse_files(self) -> None:
+        """Toggle the file-table splitter pane between collapsed and expanded."""
+        sizes = self._splitter.sizes()
+        if sizes[0] > 0:
+            self._saved_splitter_sizes = sizes[:]
+            self._splitter.setSizes([0, sum(sizes)])
+            self._collapse_btn.setText("▼  Show table")
+        else:
+            saved = self._saved_splitter_sizes
+            if saved and sum(saved) > 0:
+                self._splitter.setSizes(saved)
+            else:
+                total = sum(sizes)
+                self._splitter.setSizes([total // 2, total // 2])
+            self._collapse_btn.setText("▲  Hide table")
 
     def _on_compress_all(self) -> None:
         output_str = self._output_edit.text().strip()
@@ -375,6 +440,7 @@ class MainWindow(QMainWindow):
         self._recursive_check.setChecked(s.value("recursive", True, type=bool))
 
     def closeEvent(self, event) -> None:
+        self._preview_panel.cleanup()
         self._save_settings()
         super().closeEvent(event)
 
