@@ -197,7 +197,7 @@ Files already smaller than their budget are excluded from the pool and their unu
 
 Two-pass **libx264** encoding via ffmpeg:
 
-$$\text{video\_kbps} = \frac{\text{target\_bytes} \times 8}{\text{duration\_seconds} \times 1000} - 128$$
+$$\text{video kbps} = \frac{\text{target bytes} \times 8}{\text{duration seconds} \times 1000} - 128$$
 
 128 kbps is reserved for the AAC audio track. If the resulting video bitrate is below 100 kbps, a `ValueError` is raised and the worker copies the original unchanged (the UI warns you beforehand).
 
