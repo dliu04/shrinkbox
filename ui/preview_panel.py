@@ -158,8 +158,15 @@ class PreviewPanel(QWidget):
         _cl.setContentsMargins(0, 0, 0, 0)
         self._video_widget = QVideoWidget()
         self._video_widget.setMinimumHeight(100)
+        self._video_widget.installEventFilter(self)
         _cl.addWidget(self._video_widget)
         self._video_scroll.setWidget(self._video_container)
+
+        # Drag-to-pan state
+        self._video_drag_start = None
+        self._video_drag_h = 0
+        self._video_drag_v = 0
+        self._video_scroll.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
 
         self._audio_output = QAudioOutput()
         self._player = QMediaPlayer()
@@ -384,17 +391,59 @@ class PreviewPanel(QWidget):
             self._player.setPosition(0)
             self._player.play()
 
-    # ── event filter (video scroll-wheel zoom) ────────────────────────────────
+    # ── event filter (video scroll-wheel zoom + drag-to-pan) ───────────────
 
     def eventFilter(self, obj, event) -> bool:
-        if (hasattr(self, "_video_scroll")
-                and obj is self._video_scroll.viewport()
-                and event.type() == QEvent.Type.Wheel):
-            if event.angleDelta().y() > 0:
-                self._video_zoom_in()
-            else:
-                self._video_zoom_out()
+        if not hasattr(self, "_video_scroll"):
+            return super().eventFilter(obj, event)
+
+        vp = self._video_scroll.viewport()
+        vw = getattr(self, "_video_widget", None)
+        if obj is not vp and obj is not vw:
+            return super().eventFilter(obj, event)
+
+        t = event.type()
+
+        # Only pointer/wheel events carry a position — ignore everything else
+        _POS_EVENTS = (
+            QEvent.Type.Wheel,
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.MouseMove,
+            QEvent.Type.MouseButtonRelease,
+        )
+        if t not in _POS_EVENTS:
+            return super().eventFilter(obj, event)
+
+        # Map position to viewport coordinates
+        pos = event.position().toPoint()
+        if obj is not vp:
+            pos = obj.mapTo(vp, pos)
+
+        if t == QEvent.Type.Wheel:
+            delta = event.angleDelta().y()
+            if delta != 0:
+                self._video_zoom_at(pos, delta > 0)
             return True
+
+        if t == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            self._video_drag_start = pos
+            self._video_drag_h = self._video_scroll.horizontalScrollBar().value()
+            self._video_drag_v = self._video_scroll.verticalScrollBar().value()
+            vp.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return True
+
+        if t == QEvent.Type.MouseMove and self._video_drag_start is not None:
+            dx = pos.x() - self._video_drag_start.x()
+            dy = pos.y() - self._video_drag_start.y()
+            self._video_scroll.horizontalScrollBar().setValue(self._video_drag_h - dx)
+            self._video_scroll.verticalScrollBar().setValue(self._video_drag_v - dy)
+            return True
+
+        if t == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            self._video_drag_start = None
+            vp.setCursor(Qt.CursorShape.OpenHandCursor)
+            return True
+
         return super().eventFilter(obj, event)
 
     # ── video zoom ────────────────────────────────────────────────────────────
@@ -423,6 +472,34 @@ class PreviewPanel(QWidget):
                 max(1, int(vw * self._video_zoom)),
                 max(1, int(vh * self._video_zoom)),
             )
+
+    def _video_zoom_at(self, viewport_pos, zoom_in: bool) -> None:
+        """Zoom video keeping the content point under viewport_pos fixed."""
+        h_bar = self._video_scroll.horizontalScrollBar()
+        v_bar = self._video_scroll.verticalScrollBar()
+        px, py = viewport_pos.x(), viewport_pos.y()
+
+        vp_w = self._video_scroll.viewport().width()
+        vp_h = self._video_scroll.viewport().height()
+
+        # Sizes before zoom (use viewport size when zoom==1, computed otherwise)
+        old_w = vp_w if self._video_zoom == 1.0 else max(1, int(vp_w * self._video_zoom))
+        old_h = vp_h if self._video_zoom == 1.0 else max(1, int(vp_h * self._video_zoom))
+        ox = max(0, (vp_w - old_w) // 2)
+        oy = max(0, (vp_h - old_h) // 2)
+
+        cx = max(0, min(px + h_bar.value() - ox, old_w))
+        cy = max(0, min(py + v_bar.value() - oy, old_h))
+
+        self._video_zoom_set(self._video_zoom * (1.25 if zoom_in else 1.0 / 1.25))
+
+        new_w = vp_w if self._video_zoom == 1.0 else max(1, int(vp_w * self._video_zoom))
+        new_h = vp_h if self._video_zoom == 1.0 else max(1, int(vp_h * self._video_zoom))
+        new_ox = max(0, (vp_w - new_w) // 2)
+        new_oy = max(0, (vp_h - new_h) // 2)
+
+        h_bar.setValue(int(cx / old_w * new_w - px + new_ox))
+        v_bar.setValue(int(cy / old_h * new_h - py + new_oy))
 
     # ── slots: apply ──────────────────────────────────────────────────────────
 
@@ -608,9 +685,16 @@ class _ZoomableImageView(QScrollArea):
         self._inner = QLabel()
         self._inner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._inner.setMinimumSize(1, 1)
+        self._inner.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setWidget(self._inner)
         self._src: QPixmap | None = None
         self._zoom: float = 0.0   # 0 = fit
+        # Drag-to-pan state
+        self._drag_start = None
+        self._drag_h = 0
+        self._drag_v = 0
+        self.viewport().installEventFilter(self)
+        self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
 
     # ── public ────────────────────────────────────────────────────────────────
 
@@ -647,12 +731,31 @@ class _ZoomableImageView(QScrollArea):
 
     # ── events ────────────────────────────────────────────────────────────────
 
-    def wheelEvent(self, event) -> None:
-        if event.angleDelta().y() > 0:
-            self.zoom_in()
-        else:
-            self.zoom_out()
-        event.accept()
+    def eventFilter(self, obj, event) -> bool:
+        if obj is not self.viewport():
+            return super().eventFilter(obj, event)
+        t = event.type()
+        if t == QEvent.Type.Wheel:
+            delta = event.angleDelta().y()
+            if delta != 0:
+                self._zoom_at_cursor(event.position().toPoint(), delta > 0)
+            return True
+        if t == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = event.position().toPoint()
+            self._drag_h = self.horizontalScrollBar().value()
+            self._drag_v = self.verticalScrollBar().value()
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            return True
+        if t == QEvent.Type.MouseMove and self._drag_start is not None:
+            d = event.position().toPoint() - self._drag_start
+            self.horizontalScrollBar().setValue(self._drag_h - d.x())
+            self.verticalScrollBar().setValue(self._drag_v - d.y())
+            return True
+        if t == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start = None
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            return True
+        return super().eventFilter(obj, event)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -685,3 +788,35 @@ class _ZoomableImageView(QScrollArea):
         )
         self._inner.setPixmap(px)
         self._inner.resize(px.width(), px.height())
+
+    def _zoom_at_cursor(self, pos, zoom_in: bool) -> None:
+        """Zoom so the content point under *pos* (viewport coords) stays fixed."""
+        h_bar = self.horizontalScrollBar()
+        v_bar = self.verticalScrollBar()
+        px, py = pos.x(), pos.y()
+
+        inner_w = max(1, self._inner.width())
+        inner_h = max(1, self._inner.height())
+        vp_w = self.viewport().width()
+        vp_h = self.viewport().height()
+
+        # Centering offset when content is smaller than viewport
+        ox = max(0, (vp_w - inner_w) // 2)
+        oy = max(0, (vp_h - inner_h) // 2)
+
+        # Content pixel under cursor
+        cx = max(0, min(px + h_bar.value() - ox, inner_w))
+        cy = max(0, min(py + v_bar.value() - oy, inner_h))
+
+        # Apply zoom
+        self._zoom = max(0.05, self._effective_zoom() * (1.25 if zoom_in else 1.0 / 1.25))
+        self._render()
+
+        new_w = max(1, self._inner.width())
+        new_h = max(1, self._inner.height())
+        new_ox = max(0, (vp_w - new_w) // 2)
+        new_oy = max(0, (vp_h - new_h) // 2)
+
+        # Scroll to keep the same content pixel under the cursor
+        h_bar.setValue(int(cx / inner_w * new_w - px + new_ox))
+        v_bar.setValue(int(cy / inner_h * new_h - py + new_oy))
