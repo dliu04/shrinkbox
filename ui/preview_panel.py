@@ -26,20 +26,23 @@ OS will reclaim the temp files on the next reboot at the latest.
 import copy
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QStackedWidget,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -101,13 +104,18 @@ class PreviewPanel(QWidget):
 
     def _build_image_panels(self) -> QWidget:
         container = QWidget()
-        hbox = QHBoxLayout(container)
-        hbox.setContentsMargins(4, 0, 4, 0)
+        vbox = QVBoxLayout(container)
+        vbox.setContentsMargins(4, 0, 4, 0)
+        vbox.setSpacing(4)
+
+        panels = QWidget()
+        hbox = QHBoxLayout(panels)
+        hbox.setContentsMargins(0, 0, 0, 0)
         hbox.setSpacing(10)
 
         orig_group = QGroupBox("Original")
         orig_inner = QVBoxLayout(orig_group)
-        self._orig_img = _ScaledImageLabel()
+        self._orig_img = _ZoomableImageView()
         self._orig_size_lbl = QLabel()
         self._orig_size_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         orig_inner.addWidget(self._orig_img, stretch=1)
@@ -115,14 +123,16 @@ class PreviewPanel(QWidget):
 
         comp_group = QGroupBox("Compressed")
         comp_inner = QVBoxLayout(comp_group)
-        self._comp_img = _ScaledImageLabel()
-        self._comp_size_lbl = QLabel("—")
+        self._comp_img = _ZoomableImageView()
+        self._comp_size_lbl = QLabel("\u2014")
         self._comp_size_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         comp_inner.addWidget(self._comp_img, stretch=1)
         comp_inner.addWidget(self._comp_size_lbl)
 
         hbox.addWidget(orig_group)
         hbox.addWidget(comp_group)
+        vbox.addWidget(panels, stretch=1)
+        vbox.addWidget(self._build_zoom_bar("image"))
         return container
 
     def _build_video_panel(self) -> QWidget:
@@ -135,20 +145,36 @@ class PreviewPanel(QWidget):
         self._video_info_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         vbox.addWidget(self._video_info_lbl)
 
+        # Scroll area wrapper — resizing the inner container zooms the video
+        self._video_scroll = QScrollArea()
+        self._video_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._video_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._video_scroll.setWidgetResizable(True)  # zoom=1: fill viewport
+        self._video_scroll.viewport().installEventFilter(self)
+        self._video_zoom = 1.0
+
+        self._video_container = QWidget()
+        _cl = QVBoxLayout(self._video_container)
+        _cl.setContentsMargins(0, 0, 0, 0)
         self._video_widget = QVideoWidget()
         self._video_widget.setMinimumHeight(100)
+        _cl.addWidget(self._video_widget)
+        self._video_scroll.setWidget(self._video_container)
+
         self._audio_output = QAudioOutput()
         self._player = QMediaPlayer()
         self._player.setAudioOutput(self._audio_output)
         self._player.setVideoOutput(self._video_widget)
         self._player.playbackStateChanged.connect(self._on_playback_state_changed)
         self._player.mediaStatusChanged.connect(self._on_media_status_changed)
-        vbox.addWidget(self._video_widget, stretch=1)
+        vbox.addWidget(self._video_scroll, stretch=1)
 
         ctrl = QWidget()
         ctrl_layout = QHBoxLayout(ctrl)
         ctrl_layout.setContentsMargins(0, 0, 0, 0)
-        self._play_btn = QPushButton("▶  Play")
+        _style = QApplication.style()
+        self._play_btn = QPushButton("Play")
+        self._play_btn.setIcon(_style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self._play_btn.setEnabled(False)
         self._play_btn.setFixedWidth(90)
         self._play_btn.clicked.connect(self._toggle_play)
@@ -159,6 +185,7 @@ class PreviewPanel(QWidget):
         ctrl_layout.addSpacing(12)
         ctrl_layout.addWidget(self._video_status_lbl)
         ctrl_layout.addStretch()
+        ctrl_layout.addWidget(self._build_zoom_bar("video"))
         vbox.addWidget(ctrl)
         return container
 
@@ -219,6 +246,47 @@ class PreviewPanel(QWidget):
         self._controls_container = container
         return container
 
+    def _build_zoom_bar(self, kind: str) -> QWidget:
+        """Return a small [\u2212] [Fit] [+] row wired to image or video zoom."""
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(0, 0, 4, 0)
+        layout.setSpacing(2)
+        layout.addStretch()
+
+        btn_out = QPushButton("\u2212")
+        btn_out.setFixedSize(26, 22)
+        btn_out.setToolTip("Zoom out  (scroll wheel)")
+        btn_fit = QPushButton("Fit")
+        btn_fit.setFixedSize(36, 22)
+        btn_fit.setToolTip("Reset to fit view")
+        btn_in = QPushButton("+")
+        btn_in.setFixedSize(26, 22)
+        btn_in.setToolTip("Zoom in  (scroll wheel)")
+
+        if kind == "image":
+            def _zo():
+                self._orig_img.zoom_out()
+                self._comp_img.zoom_out()
+            def _zf():
+                self._orig_img.zoom_fit()
+                self._comp_img.zoom_fit()
+            def _zi():
+                self._orig_img.zoom_in()
+                self._comp_img.zoom_in()
+            btn_out.clicked.connect(_zo)
+            btn_fit.clicked.connect(_zf)
+            btn_in.clicked.connect(_zi)
+        else:
+            btn_out.clicked.connect(self._video_zoom_out)
+            btn_fit.clicked.connect(self._video_zoom_fit)
+            btn_in.clicked.connect(self._video_zoom_in)
+
+        layout.addWidget(btn_out)
+        layout.addWidget(btn_fit)
+        layout.addWidget(btn_in)
+        return bar
+
     # ── public API ────────────────────────────────────────────────────────────
 
     def load_file(self, file_info: FileInfo) -> None:
@@ -242,6 +310,7 @@ class PreviewPanel(QWidget):
             self._comp_size_lbl.setText("—")
         else:
             self._stack.setCurrentIndex(_PAGE_VIDEO)
+            self._video_zoom_set(1.0)
             self._video_info_lbl.setText(
                 f"<b>{file_info.path.name}</b>  ·  "
                 f"original: {human_readable(file_info.original_size)}  ·  "
@@ -275,6 +344,13 @@ class PreviewPanel(QWidget):
         self._release_player()
         self._cleanup_temp_files()
 
+    def pause_playback(self) -> None:
+        """Pause video if currently playing \u2014 called before compression starts."""
+        if (hasattr(self, "_player")
+                and self._player.playbackState()
+                == QMediaPlayer.PlaybackState.PlayingState):
+            self._player.pause()
+
     # ── slots: slider ─────────────────────────────────────────────────────────
 
     def _on_slider_moved(self, value: int) -> None:
@@ -294,17 +370,59 @@ class PreviewPanel(QWidget):
             self._player.play()
 
     def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
-        self._play_btn.setText(
-            "⏸  Pause"
-            if state == QMediaPlayer.PlaybackState.PlayingState
-            else "▶  Play"
-        )
+        _style = QApplication.style()
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            self._play_btn.setIcon(_style.standardIcon(QStyle.StandardPixmap.SP_MediaPause))
+            self._play_btn.setText("Pause")
+        else:
+            self._play_btn.setIcon(_style.standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+            self._play_btn.setText("Play")
 
     def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
         """Loop the 5-second preview clip continuously."""
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
             self._player.setPosition(0)
             self._player.play()
+
+    # ── event filter (video scroll-wheel zoom) ────────────────────────────────
+
+    def eventFilter(self, obj, event) -> bool:
+        if (hasattr(self, "_video_scroll")
+                and obj is self._video_scroll.viewport()
+                and event.type() == QEvent.Type.Wheel):
+            if event.angleDelta().y() > 0:
+                self._video_zoom_in()
+            else:
+                self._video_zoom_out()
+            return True
+        return super().eventFilter(obj, event)
+
+    # ── video zoom ────────────────────────────────────────────────────────────
+
+    def _video_zoom_in(self) -> None:
+        self._video_zoom_set(self._video_zoom * 1.25)
+
+    def _video_zoom_out(self) -> None:
+        self._video_zoom_set(self._video_zoom / 1.25)
+
+    def _video_zoom_fit(self) -> None:
+        self._video_zoom_set(1.0)
+
+    def _video_zoom_set(self, z: float) -> None:
+        self._video_zoom = max(0.1, min(z, 8.0))
+        if abs(self._video_zoom - 1.0) < 0.02:
+            self._video_zoom = 1.0
+            self._video_container.setMinimumSize(0, 0)
+            self._video_container.setMaximumSize(16_777_215, 16_777_215)
+            self._video_scroll.setWidgetResizable(True)
+        else:
+            self._video_scroll.setWidgetResizable(False)
+            vw = self._video_scroll.viewport().width()
+            vh = self._video_scroll.viewport().height()
+            self._video_container.setFixedSize(
+                max(1, int(vw * self._video_zoom)),
+                max(1, int(vh * self._video_zoom)),
+            )
 
     # ── slots: apply ──────────────────────────────────────────────────────────
 
@@ -473,30 +591,97 @@ def _savings_pct(compressed: int, original: int) -> float:
     return 0.0 if original == 0 else (1 - compressed / original) * 100
 
 
-class _ScaledImageLabel(QLabel):
-    """QLabel that scales its pixmap to fit while keeping aspect ratio."""
+class _ZoomableImageView(QScrollArea):
+    """QScrollArea displaying a QPixmap with scroll-wheel / button zoom.
+
+    _zoom = 0.0  \u2192  fit to viewport (default; resets on each new image).
+    _zoom > 0.0  \u2192  fixed scale; scrollbars appear when larger than view.
+    """
 
     def __init__(self) -> None:
         super().__init__()
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setWidgetResizable(False)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(100, 80)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._inner = QLabel()
+        self._inner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._inner.setMinimumSize(1, 1)
+        self.setWidget(self._inner)
         self._src: QPixmap | None = None
+        self._zoom: float = 0.0   # 0 = fit
 
-    def setPixmap(self, pixmap: QPixmap) -> None:  # type: ignore[override]
+    # ── public ────────────────────────────────────────────────────────────────
+
+    def setPixmap(self, pixmap: QPixmap) -> None:   # type: ignore[override]
         self._src = pixmap
+        self._zoom = 0.0
         self._render()
+
+    def clear(self) -> None:
+        self._src = None
+        self._inner.clear()
+        self._inner.resize(
+            max(1, self.viewport().width()), max(1, self.viewport().height())
+        )
+
+    def setText(self, text: str) -> None:   # type: ignore[override]
+        self._src = None
+        self._inner.setText(text)
+        self._inner.resize(
+            max(1, self.viewport().width()), max(1, self.viewport().height())
+        )
+
+    def zoom_in(self) -> None:
+        self._zoom = self._effective_zoom() * 1.25
+        self._render()
+
+    def zoom_out(self) -> None:
+        self._zoom = max(0.05, self._effective_zoom() / 1.25)
+        self._render()
+
+    def zoom_fit(self) -> None:
+        self._zoom = 0.0
+        self._render()
+
+    # ── events ────────────────────────────────────────────────────────────────
+
+    def wheelEvent(self, event) -> None:
+        if event.angleDelta().y() > 0:
+            self.zoom_in()
+        else:
+            self.zoom_out()
+        event.accept()
 
     def resizeEvent(self, event) -> None:
-        self._render()
         super().resizeEvent(event)
+        if self._zoom == 0.0:
+            self._render()
+
+    # ── internals ─────────────────────────────────────────────────────────────
+
+    def _effective_zoom(self) -> float:
+        if self._zoom > 0.0:
+            return self._zoom
+        if not self._src or self._src.isNull():
+            return 1.0
+        vw, vh = self.viewport().width(), self.viewport().height()
+        sw, sh = self._src.width(), self._src.height()
+        if sw == 0 or sh == 0:
+            return 1.0
+        return min(vw / sw, vh / sh)
 
     def _render(self) -> None:
-        if self._src and not self._src.isNull():
-            super().setPixmap(
-                self._src.scaled(
-                    self.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
-            )
+        if not self._src or self._src.isNull():
+            return
+        z = self._effective_zoom()
+        w = max(1, int(self._src.width() * z))
+        h = max(1, int(self._src.height() * z))
+        px = self._src.scaled(
+            w, h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self._inner.setPixmap(px)
+        self._inner.resize(px.width(), px.height())

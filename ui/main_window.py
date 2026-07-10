@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QSplitter,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -226,9 +227,12 @@ class MainWindow(QMainWindow):
         self._files_header_lbl = QLabel("Files")
         layout.addWidget(self._files_header_lbl)
         layout.addStretch()
-        self._collapse_btn = QPushButton("▲  Hide table")
+        self._collapse_btn = QPushButton("Hide table")
+        self._collapse_btn.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
+        )
         self._collapse_btn.setFlat(True)
-        self._collapse_btn.setFixedWidth(110)
+        self._collapse_btn.setFixedWidth(120)
         self._collapse_btn.setToolTip("Collapse or expand the file list")
         self._collapse_btn.clicked.connect(self._toggle_collapse_files)
         layout.addWidget(self._collapse_btn)
@@ -355,7 +359,10 @@ class MainWindow(QMainWindow):
         if sizes[0] > 0:
             self._saved_splitter_sizes = sizes[:]
             self._splitter.setSizes([0, sum(sizes)])
-            self._collapse_btn.setText("▼  Show table")
+            self._collapse_btn.setIcon(
+                self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+            )
+            self._collapse_btn.setText("Show table")
         else:
             saved = self._saved_splitter_sizes
             if saved and sum(saved) > 0:
@@ -363,7 +370,10 @@ class MainWindow(QMainWindow):
             else:
                 total = sum(sizes)
                 self._splitter.setSizes([total // 2, total // 2])
-            self._collapse_btn.setText("▲  Hide table")
+            self._collapse_btn.setIcon(
+                self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
+            )
+            self._collapse_btn.setText("Hide table")
 
     def _on_compress_all(self) -> None:
         output_str = self._output_edit.text().strip()
@@ -444,6 +454,7 @@ class MainWindow(QMainWindow):
         )
 
         dlg = ProgressDialog(worker, parent=self)
+        self._preview_panel.pause_playback()
         worker.start()
         dlg.exec()
         # Ensure worker is fully done before the dialog goes out of scope
