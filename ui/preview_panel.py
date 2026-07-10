@@ -142,6 +142,7 @@ class PreviewPanel(QWidget):
         self._player.setAudioOutput(self._audio_output)
         self._player.setVideoOutput(self._video_widget)
         self._player.playbackStateChanged.connect(self._on_playback_state_changed)
+        self._player.mediaStatusChanged.connect(self._on_media_status_changed)
         vbox.addWidget(self._video_widget, stretch=1)
 
         ctrl = QWidget()
@@ -202,13 +203,14 @@ class PreviewPanel(QWidget):
             "When checked, the same quality percentage is applied proportionally "
             "to every file in the list."
         )
+        self._apply_all_check.stateChanged.connect(self._on_apply_all_changed)
         ar.addWidget(self._apply_all_check)
         ar.addStretch()
         self._generating_lbl = QLabel()
         self._generating_lbl.setStyleSheet("color: gray;")
         ar.addWidget(self._generating_lbl)
-        self._apply_btn = QPushButton("Apply")
-        self._apply_btn.setFixedWidth(80)
+        self._apply_btn = QPushButton("Apply to all")
+        self._apply_btn.setFixedWidth(100)
         self._apply_btn.setToolTip("Commit this target size to the file list")
         self._apply_btn.clicked.connect(self._on_apply)
         ar.addWidget(self._apply_btn)
@@ -298,7 +300,18 @@ class PreviewPanel(QWidget):
             else "▶  Play"
         )
 
+    def _on_media_status_changed(self, status: QMediaPlayer.MediaStatus) -> None:
+        """Loop the 5-second preview clip continuously."""
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            self._player.setPosition(0)
+            self._player.play()
+
     # ── slots: apply ──────────────────────────────────────────────────────────
+
+    def _on_apply_all_changed(self) -> None:
+        self._apply_btn.setText(
+            "Apply to all" if self._apply_all_check.isChecked() else "Apply"
+        )
 
     def _on_apply(self) -> None:
         if self._fi:

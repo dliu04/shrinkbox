@@ -103,6 +103,12 @@ class MainWindow(QMainWindow):
         self._preview_debounce.setInterval(150)
         self._preview_debounce.timeout.connect(self._trigger_auto_preview)
 
+        # Debounce timer — auto-scan fires 800 ms after folder path settles
+        self._scan_debounce = QTimer(self)
+        self._scan_debounce.setSingleShot(True)
+        self._scan_debounce.setInterval(800)
+        self._scan_debounce.timeout.connect(self._auto_scan)
+
     def _build_controls(self) -> QWidget:
         box = QWidget()
         form = QFormLayout(box)
@@ -240,16 +246,17 @@ class MainWindow(QMainWindow):
             self._output_manually_set = True
 
     def _on_input_changed(self, text: str) -> None:
-        """Auto-suggest an output folder when the input changes (unless overridden)."""
-        if self._output_manually_set:
-            return
-        text = text.strip()
-        if text:
-            p = Path(text)
-            suggested = p.parent / (p.name + "_shrinkbox")
-            self._output_edit.setText(str(suggested))
-        else:
-            self._output_edit.clear()
+        """Auto-suggest output folder and kick off auto-scan debounce."""
+        stripped = text.strip()
+        if not self._output_manually_set:
+            if stripped:
+                p = Path(stripped)
+                suggested = p.parent / (p.name + "_shrinkbox")
+                self._output_edit.setText(str(suggested))
+            else:
+                self._output_edit.clear()
+        if stripped:
+            self._scan_debounce.start()
 
     def _on_target_changed(self) -> None:
         if self._files:
@@ -263,27 +270,39 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No folder selected",
                                 "Please choose an input folder before scanning.")
             return
+        self._do_scan(folder_str, show_dialogs=True)
+
+    def _auto_scan(self) -> None:
+        """Silent auto-scan triggered when the input folder path settles."""
+        folder_str = self._input_edit.text().strip()
+        if folder_str and Path(folder_str).is_dir():
+            self._do_scan(folder_str, show_dialogs=False)
+
+    def _do_scan(self, folder_str: str, show_dialogs: bool = True) -> None:
         folder = Path(folder_str)
         if not folder.is_dir():
-            QMessageBox.warning(self, "Invalid folder",
-                                f"The path is not a valid directory:\n{folder}")
+            if show_dialogs:
+                QMessageBox.warning(self, "Invalid folder",
+                                    f"The path is not a valid directory:\n{folder}")
             return
 
         try:
             files = scan_folder(folder, recursive=self._recursive_check.isChecked())
         except Exception as exc:
-            QMessageBox.critical(self, "Scan error", str(exc))
+            if show_dialogs:
+                QMessageBox.critical(self, "Scan error", str(exc))
             return
 
         self._files = files
 
         if not files:
-            QMessageBox.information(
-                self, "No media found",
-                "No supported image or video files were found in that folder.\n\n"
-                "Supported images: JPG, PNG, WebP, BMP, TIFF\n"
-                "Supported videos: MP4, MOV, MKV, AVI, WMV, M4V, WebM",
-            )
+            if show_dialogs:
+                QMessageBox.information(
+                    self, "No media found",
+                    "No supported image or video files were found in that folder.\n\n"
+                    "Supported images: JPG, PNG, WebP, BMP, TIFF\n"
+                    "Supported videos: MP4, MOV, MKV, AVI, WMV, M4V, WebM",
+                )
             self._populate_table()
             self._compress_btn.setEnabled(False)
             self._files_header_lbl.setText("Files  (0)")
