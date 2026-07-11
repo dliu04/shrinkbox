@@ -204,6 +204,10 @@ class MainWindow(QMainWindow):
         enc_layout.addStretch()
         form.addRow("Encoding:", enc)
 
+        self._codec_h264.toggled.connect(lambda _: self._refresh_preview())
+        self._codec_av1.toggled.connect(lambda _: self._refresh_preview())
+        self._avif_check.stateChanged.connect(lambda _: self._refresh_preview())
+
         return box
 
     @staticmethod
@@ -316,6 +320,7 @@ class MainWindow(QMainWindow):
             distribute_budget(self._files, self._target_spin.value())
             self._refresh_targets()
             self._update_summary()
+            self._refresh_preview()
 
     def _on_scan(self) -> None:
         folder_str = self._input_edit.text().strip()
@@ -392,6 +397,12 @@ class MainWindow(QMainWindow):
 
     def _trigger_auto_preview(self) -> None:
         """Called by the debounce timer; loads the selected row into the preview panel."""
+        row = self._current_preview_row
+        if 0 <= row < len(self._files):
+            self._preview_panel.load_file(self._files[row], self._get_compression_settings())
+
+    def _refresh_preview(self) -> None:
+        """Re-load the current preview when codec / format settings change."""
         row = self._current_preview_row
         if 0 <= row < len(self._files):
             self._preview_panel.load_file(self._files[row], self._get_compression_settings())
