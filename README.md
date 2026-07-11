@@ -24,6 +24,282 @@ Shrinkbox is a Windows desktop app built with Python + PyQt6. You pick a source 
 ## Features
 
 - **Batch compression** — point at any folder (scanned recursively) and set one target size in MB.
+- **Proportional budget distribution** — larger files get a proportionally larger slice of the budget, so quality degrades evenly across the whole folder.
+- **Live quality preview** — scrub a slider to preview what an image or video will look like at the calculated quality before anything is written to disk.
+  - Scroll-wheel **zoom toward cursor** and **drag to pan** on both image and video previews.
+  - `[−]`, `[Fit]`, `[+]` zoom controls.
+- **Video codec choice**: **H.264** (widest compatibility) or **AV1** (~40% smaller, requires a modern player).
+- **Image format choice**: keep the original format, or convert everything to **JPEG**, **WebP**, or **AVIF**.
+- **Supported input formats**:
+  - Images: JPEG, PNG, WebP, BMP, TIFF
+  - Videos: MP4, MOV, MKV, AVI, WMV, M4V, WebM — any container ffmpeg can read
+- **Per-file progress bar** — video encodes show a smooth 0→100% fill as ffmpeg works through pass 2.
+- **Parallel image processing** — images are compressed simultaneously across all CPU cores for faster batch runs.
+- **Minimum bitrate safety net** — if a video's budget is too tight for a watchable encode, Shrinkbox compresses it at the 100 kbps floor instead of giving up; the log flags it with ⚠ min bitrate applied.
+- **Live overall progress** — file table status column, overall progress bar, scrollable log, and a cancel button (finishes the current file then stops).
+- **Non-destructive** — source files are never modified; output always goes to a separate folder.
+- Files already at or below their budget are copied unchanged.
+
+---
+
+## Screenshots / Quick Tour
+<img width="1033" height="705" alt="image" src="https://github.com/user-attachments/assets/10410566-ef73-4c29-8136-c4b44f6c3250" />
+
+> _Compress entire folders of images and videos to hit a target size._
+
+<img width="1033" height="705" alt="image" src="https://github.com/user-attachments/assets/d69198e1-3ecf-4f5c-8a89-526c25911a82" />
+
+> _Compress with confidence with a live preview before you commit._
+
+| Step | What you do |
+|------|-------------|
+| 1 | Choose **Source Folder** and **Output Folder** |
+| 2 | Set a **Target Size** in MB |
+| 3 | Pick a **Video codec** and **Image format** in the encoding panel |
+| 4 | Click a file row to open the **Quality Preview** panel |
+| 5 | Adjust the preview slider; click **Apply** to lock in per-file targets |
+| 6 | Click **Compress All** — a progress dialog shows live per-file and overall status |
+| 7 | When done, click **Open Output Folder** |
+
+---
+
+## Download & Run (End Users)
+
+1. Go to the [**Releases**](../../releases) page and download the latest `Shrinkbox.zip`.
+2. Extract the zip anywhere — no installer required.
+3. Run `Shrinkbox.exe` inside the extracted folder.
+
+> **Requirements**: Windows 10/11 (64-bit). Everything else — Python, Qt, ffmpeg — is bundled inside the zip.
+
+---
+
+## Building from Source
+
+### Prerequisites
+
+| Tool | Version | Notes |
+|------|---------|-------|
+| Python | 3.11 or 3.12 | [python.org](https://www.python.org/downloads/) |
+| ffmpeg + ffprobe | Any recent GPL build | Must be on `PATH` — see below |
+
+**Install ffmpeg** (development only):  
+Download `ffmpeg-master-latest-win64-gpl.zip` from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases). Extract it and add the inner `bin\` folder to your system `PATH`.
+
+> For AV1 encoding in development, your ffmpeg build needs `libsvtav1` or `libaom-av1`. Most BtbN GPL builds include at least `libaom-av1`. The bundled exe uses `libsvtav1`, which is significantly faster.
+
+### Clone and install
+
+```powershell
+git clone https://github.com/dliu04/shrinkbox.git
+cd shrinkbox
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### Run
+
+```powershell
+python main.py
+```
+
+---
+
+## Packaging as a Standalone .exe
+
+The repo ships with a ready-made PyInstaller spec (`shrinkbox.spec`) that bundles Python, all dependencies, and ffmpeg into a single folder.
+
+### 1 — Get ffmpeg binaries for bundling
+
+Download `ffmpeg-master-latest-win64-gpl.zip` from [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds/releases).  
+Copy **all files** from inside the zip's `bin\` folder into a `bin\` folder at the project root — this includes `ffmpeg.exe`, `ffprobe.exe`, and all shared library DLLs:
+
+```
+shrinkbox\
+  bin\
+    ffmpeg.exe
+    ffprobe.exe
+    avcodec-*.dll
+    avformat-*.dll
+    avutil-*.dll
+    avfilter-*.dll
+    avdevice-*.dll
+    swscale-*.dll
+    swresample-*.dll
+    postproc-*.dll    ← copy everything; the spec globs bin\* automatically
+  main.py
+  shrinkbox.spec
+  ...
+```
+
+> `bin\` is gitignored — large binaries should not be committed.
+
+### 2 — Install PyInstaller
+
+```powershell
+pip install "pyinstaller>=6.0"
+```
+
+### 3 — Build
+
+```powershell
+pyinstaller shrinkbox.spec
+```
+
+### 4 — Output
+
+```
+dist\
+  Shrinkbox\
+    Shrinkbox.exe      ← launch this
+    _internal\
+        ffmpeg.exe
+        ffprobe.exe
+        ... (Qt, Python, and ffmpeg DLL runtime files)
+```
+
+Zip the entire `dist\Shrinkbox\` folder and attach it to a GitHub Release.
+
+---
+
+## Project Structure
+
+```
+shrinkbox/
+├── main.py                      # Entry point; dependency check, then MainWindow
+├── requirements.txt             # Runtime Python dependencies
+├── shrinkbox.spec               # PyInstaller build script
+├── resources/
+│   └── icon.ico                 # Application icon
+│
+├── core/
+│   ├── compression_settings.py  # VideoCodec / ImageFormat / CompressionSettings
+│   ├── file_scanner.py          # Recursive folder scan → list[FileInfo]
+│   ├── budget.py                # Proportional size-budget distribution
+│   ├── estimator.py             # Preview-quality encode (temp file, no original touched)
+│   ├── image_compressor.py      # Pillow-based image compression (JPEG/WebP/PNG/AVIF)
+│   ├── video_compressor.py      # ffmpeg two-pass H.264 / AV1 video compression
+│   └── worker.py                # QThread background worker; images run in parallel
+│
+├── ui/
+│   ├── main_window.py           # Main application window + file table + encoding panel
+│   ├── preview_panel.py         # Inline quality-preview panel (image + video)
+│   ├── preview_dialog.py        # Standalone preview dialog
+│   └── progress_dialog.py       # Compression progress dialog with per-file bar
+│
+└── utils/
+    ├── ffmpeg_utils.py          # ffmpeg/ffprobe subprocess wrappers + encoder detection
+    └── size_utils.py            # Byte ↔ MB helpers, human_readable()
+```
+
+---
+
+## How It Works
+
+### Budget distribution (`core/budget.py`)
+
+Given a target total size T and N files with original sizes s₁…sₙ:
+
+$$\text{budget}_i = T \times \frac{s_i}{\sum_{j=1}^{N} s_j}$$
+
+Files already smaller than their budget are excluded from the pool and their unused budget is redistributed to the remaining files (iteratively).
+
+### Image compression (`core/image_compressor.py`)
+
+| Output format | Strategy |
+|---|---|
+| JPEG / WebP | Binary search on `quality` (1–95) to land at or below the budget |
+| AVIF | Binary search on `quality` (1–90; 100 = lossless) |
+| PNG | Lossless `optimize=True` first; falls back to 256-colour palette quantisation |
+| BMP / TIFF | Re-encoded as JPEG (no native lossy compression in these formats) |
+
+When an image format conversion is selected (JPEG / WebP / AVIF), every input image is re-encoded in the chosen format regardless of its original type, and the output file gets the corresponding extension.
+
+### Video compression (`core/video_compressor.py`)
+
+Two-pass encoding via ffmpeg:
+
+$$\text{video kbps} = \frac{\text{target bytes} \times 8}{\text{duration seconds} \times 1000} - 128$$
+
+128 kbps is reserved for the AAC audio track. If the computed bitrate falls below 100 kbps, the encoder clamps it to the floor and notes the overrun in the log.
+
+| Codec | Encoder | Notes |
+|---|---|---|
+| H.264 | `libx264 -preset medium` | Default; plays on every device |
+| AV1 | `libsvtav1` (preferred) or `libaom-av1` (fallback) | ~40% smaller; detected at runtime |
+
+### Parallel image processing (`core/worker.py`)
+
+Images are dispatched to a `ThreadPoolExecutor` sized to the logical CPU count. Videos are kept sequential because each ffmpeg subprocess already saturates all cores.
+
+### Per-file video progress
+
+Pass 2 is launched with `ffmpeg -progress pipe:1`, which streams structured `key=value` pairs to stdout. The worker parses `out_time_us=` events, converts to a 0–100 percentage using the known clip duration, and emits a `file_progress` signal to update the dialog's progress bar in real time.
+
+### Cancellation
+
+Clicking **Cancel** calls `QThread.requestInterruption()`. The worker checks between files — a running ffmpeg encode completes before stopping. The UI shows "Cancelling… (finishing the current file, then stopping)".
+
+---
+
+## Configuration & Limits
+
+| Setting | Default | Location |
+|---------|---------|----------|
+| Minimum video bitrate | 100 kbps | `core/video_compressor.py` → `MIN_VIDEO_BITRATE_KBPS` |
+| Audio track bitrate | 128 kbps | `core/video_compressor.py` → `AUDIO_BITRATE_KBPS` |
+| JPEG / WebP quality search range | 1–95 | `core/image_compressor.py` → `_QUALITY_MIN / _QUALITY_MAX` |
+| AVIF quality search range | 1–90 | `core/image_compressor.py` → `_AVIF_QUALITY_MAX` |
+| Preview clip length | 5 s | `core/estimator.py` → `PREVIEW_CLIP_SECONDS` |
+| Target size debounce | 400 ms | `ui/main_window.py` → `_target_debounce` |
+
+---
+
+## Contributing
+
+1. Fork the repo and create a feature branch.
+2. Run the app from source (`python main.py`) and verify your change works end-to-end.
+3. Keep new modules in the appropriate `core/`, `ui/`, or `utils/` package.
+4. Open a pull request with a clear description of what changed and why.
+
+There is no test suite yet — contributions that add one are very welcome.
+
+---
+
+## License
+
+Shrinkbox is distributed under the **GNU General Public License v3.0**.  
+See [LICENSE](LICENSE) for the full text.
+
+**Why GPL v3?** Shrinkbox uses [PyQt6](https://www.riverbankcomputing.com/software/pyqt/), which is licensed under GPL v3. Any application that links against PyQt6 must also be GPL v3 (or hold a commercial Riverbank Computing license). The bundled ffmpeg binaries are built with GPL codecs (libx264, libsvtav1); their source is available from the [FFmpeg project](https://ffmpeg.org/).
+
+---
+
+## Acknowledgements
+
+**App icon** — "Box" by [Sergei Kokota](https://icon-icons.com/authors/219-sergei-kokota), from the [Office Vol.7 Icons](https://icon-icons.com/pack/office-vol7icons/945) pack on [icon-icons.com](https://icon-icons.com/icon/box/73953). Licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Converted to ICO format for use as the application icon.
+
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Screenshots / Quick Tour](#screenshots--quick-tour)
+- [Download & Run (End Users)](#download--run-end-users)
+- [Building from Source](#building-from-source)
+- [Packaging as a Standalone .exe](#packaging-as-a-standalone-exe)
+- [Project Structure](#project-structure)
+- [How It Works](#how-it-works)
+- [Configuration & Limits](#configuration--limits)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Features
+
+- **Batch compression** — point at any folder (scanned recursively) and set one target size in MB.
 - **Proportional budget distribution** — larger files receive a proportionally larger slice of the budget, so quality degrades evenly across the whole folder.
 - **Live quality preview** — before compressing anything, scrub a slider to preview what an image or video will look like at the calculated quality.
   - Scroll-wheel **zoom toward cursor** and **drag to pan** on both image and video previews.
