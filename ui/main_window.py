@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -173,40 +174,53 @@ class MainWindow(QMainWindow):
         opts_layout.addWidget(self._scan_btn)
         form.addRow("", opts)
 
-        # Encoding options row
-        enc = QWidget()
-        enc_layout = QHBoxLayout(enc)
-        enc_layout.setContentsMargins(0, 2, 0, 0)
-        enc_layout.setSpacing(10)
+        # Encoding options — two side-by-side group boxes
+        codec_row = QWidget()
+        cr_layout = QHBoxLayout(codec_row)
+        cr_layout.setContentsMargins(0, 4, 0, 0)
+        cr_layout.setSpacing(12)
 
-        self._codec_h264 = QRadioButton("H.264")
+        # ── Video codec ───────────────────────────────────────────────────────
+        video_group = QGroupBox("Video codec")
+        vg_layout = QVBoxLayout(video_group)
+        vg_layout.setSpacing(4)
+        self._codec_h264 = QRadioButton("H.264  —  widest compatibility")
         self._codec_h264.setChecked(True)
-        self._codec_h264.setToolTip(
-            "Widest device compatibility; good quality/speed balance"
-        )
-        self._codec_av1 = QRadioButton("AV1")
+        self._codec_h264.setToolTip("Supported on every device and player")
+        self._codec_av1 = QRadioButton("AV1  —  ~40% smaller, modern players only")
         self._codec_av1.setToolTip(
-            "~40% smaller than H.264 at equal quality; slower to encode; "
-            "requires modern players (Windows 11 built-in, VLC 3+)"
+            "Requires Windows 11 built-in player, VLC 3+, or similar.\n"
+            "Encode is slower; much faster when using the bundled exe (libsvtav1)."
         )
+        vg_layout.addWidget(self._codec_h264)
+        vg_layout.addWidget(self._codec_av1)
+        vg_layout.addStretch()
+        cr_layout.addWidget(video_group)
 
-        self._avif_check = QCheckBox("Convert images to AVIF")
-        self._avif_check.setToolTip(
-            "AVIF (AV1 Image Format) — ~50% smaller than JPEG at similar quality. "
-            "Output files will have .avif extension."
-        )
+        # ── Image format ──────────────────────────────────────────────────────
+        image_group = QGroupBox("Image format")
+        ig_layout = QVBoxLayout(image_group)
+        ig_layout.setSpacing(4)
+        self._img_original = QRadioButton("Original  —  keep source format")
+        self._img_original.setChecked(True)
+        self._img_jpeg = QRadioButton("JPEG  —  most compatible, universal support")
+        self._img_jpeg.setToolTip("Converts every image to JPEG. Output: .jpg")
+        self._img_webp = QRadioButton("WebP  —  smaller than JPEG (iOS 14+, Android 4+)")
+        self._img_webp.setToolTip("Converts every image to WebP. Output: .webp")
+        self._img_avif = QRadioButton("AVIF  —  smallest file size (iOS 16+, Android 12+)")
+        self._img_avif.setToolTip("Converts every image to AVIF. Output: .avif")
+        ig_layout.addWidget(self._img_original)
+        ig_layout.addWidget(self._img_jpeg)
+        ig_layout.addWidget(self._img_webp)
+        ig_layout.addWidget(self._img_avif)
+        cr_layout.addWidget(image_group)
 
-        enc_layout.addWidget(QLabel("Video codec:"))
-        enc_layout.addWidget(self._codec_h264)
-        enc_layout.addWidget(self._codec_av1)
-        enc_layout.addSpacing(20)
-        enc_layout.addWidget(self._avif_check)
-        enc_layout.addStretch()
-        form.addRow("Encoding:", enc)
+        form.addRow(codec_row)
 
-        self._codec_h264.toggled.connect(lambda _: self._refresh_preview())
-        self._codec_av1.toggled.connect(lambda _: self._refresh_preview())
-        self._avif_check.stateChanged.connect(lambda _: self._refresh_preview())
+        for btn in (self._codec_h264, self._codec_av1,
+                    self._img_original, self._img_jpeg,
+                    self._img_webp, self._img_avif):
+            btn.toggled.connect(lambda _: self._refresh_preview())
 
         return box
 
@@ -524,9 +538,17 @@ class MainWindow(QMainWindow):
     # ── compression settings ──────────────────────────────────────────────────
 
     def _get_compression_settings(self) -> CompressionSettings:
+        if self._img_jpeg.isChecked():
+            image_format = ImageFormat.JPEG
+        elif self._img_webp.isChecked():
+            image_format = ImageFormat.WEBP
+        elif self._img_avif.isChecked():
+            image_format = ImageFormat.AVIF
+        else:
+            image_format = ImageFormat.ORIGINAL
         return CompressionSettings(
             video_codec=VideoCodec.AV1 if self._codec_av1.isChecked() else VideoCodec.H264,
-            image_format=ImageFormat.AVIF if self._avif_check.isChecked() else ImageFormat.ORIGINAL,
+            image_format=image_format,
         )
 
     # ── table helpers ─────────────────────────────────────────────────────────
@@ -645,7 +667,7 @@ class MainWindow(QMainWindow):
         s.setValue("recursive", self._recursive_check.isChecked())
         s.setValue("output_manually_set", self._output_manually_set)
         s.setValue("video_codec", "av1" if self._codec_av1.isChecked() else "h264")
-        s.setValue("image_avif", self._avif_check.isChecked())
+        s.setValue("image_format", self._get_compression_settings().image_format.value)
 
     def _restore_settings(self) -> None:
         s = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
@@ -657,7 +679,11 @@ class MainWindow(QMainWindow):
         is_av1 = s.value("video_codec", "h264", type=str) == "av1"
         self._codec_av1.setChecked(is_av1)
         self._codec_h264.setChecked(not is_av1)
-        self._avif_check.setChecked(s.value("image_avif", False, type=bool))
+        fmt = s.value("image_format", "original", type=str)
+        self._img_jpeg.setChecked(fmt == "jpeg")
+        self._img_webp.setChecked(fmt == "webp")
+        self._img_avif.setChecked(fmt == "avif")
+        self._img_original.setChecked(fmt not in ("jpeg", "webp", "avif"))
 
     def closeEvent(self, event) -> None:
         self._preview_panel.cleanup()

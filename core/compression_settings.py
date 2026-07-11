@@ -15,7 +15,9 @@ class VideoCodec(Enum):
 
 class ImageFormat(Enum):
     ORIGINAL = "original"   # preserve input format
-    AVIF     = "avif"       # convert every image to AVIF
+    JPEG     = "jpeg"       # convert to JPEG  (most compatible, lossy)
+    WEBP     = "webp"       # convert to WebP  (smaller, iOS 14+ / Android 4+)
+    AVIF     = "avif"       # convert to AVIF  (smallest, iOS 16+ / Android 12+)
 
 
 @dataclass

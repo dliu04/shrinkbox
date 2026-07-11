@@ -77,9 +77,17 @@ class CompressionWorker(QThread):
             except ValueError:
                 relative = Path(f.path.name)
             output_path = self.output_folder / relative
-            if (f.media_type == MediaType.IMAGE
-                    and self.settings.image_format == ImageFormat.AVIF):
-                output_path = output_path.with_suffix(".avif")
+
+            # Remap output extension when a format conversion is requested
+            if f.media_type == MediaType.IMAGE:
+                _fmt = self.settings.image_format
+                if _fmt == ImageFormat.JPEG:
+                    output_path = output_path.with_suffix(".jpg")
+                elif _fmt == ImageFormat.WEBP:
+                    output_path = output_path.with_suffix(".webp")
+                elif _fmt == ImageFormat.AVIF:
+                    output_path = output_path.with_suffix(".avif")
+
             tasks.append((index, f, output_path))
 
         image_tasks = [(i, f, p) for i, f, p in tasks if f.media_type == MediaType.IMAGE]

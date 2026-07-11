@@ -40,15 +40,24 @@ PREVIEW_CLIP_SECONDS: int = 5
 def estimate_image(file_info: FileInfo, settings: CompressionSettings | None = None) -> Path:
     """
     Compress the image described by *file_info* to its target_size and save
-    the result to a temporary file.  If *settings* requests AVIF output the
-    temp file will have a .avif extension and the image is converted.
+    the result to a temporary file.  The output format follows *settings*:
+    JPEG → .jpg, WebP → .webp, AVIF → .avif, ORIGINAL → source extension.
 
     Returns:
         Path to the temporary file (caller must delete when done).
     """
     source = file_info.path
-    use_avif = settings is not None and settings.image_format == ImageFormat.AVIF
-    ext = ".avif" if use_avif else source.suffix.lower()
+    fmt = settings.image_format if settings is not None else ImageFormat.ORIGINAL
+    force_convert = fmt != ImageFormat.ORIGINAL
+
+    if fmt == ImageFormat.JPEG:
+        ext = ".jpg"
+    elif fmt == ImageFormat.WEBP:
+        ext = ".webp"
+    elif fmt == ImageFormat.AVIF:
+        ext = ".avif"
+    else:
+        ext = source.suffix.lower()
 
     tmp = tempfile.NamedTemporaryFile(
         suffix=ext, delete=False, prefix="shrinkbox_preview_"
@@ -57,12 +66,12 @@ def estimate_image(file_info: FileInfo, settings: CompressionSettings | None = N
     tmp.close()
 
     # No compression and no format change — copy original unchanged
-    if file_info.target_size >= source.stat().st_size and not use_avif:
+    if file_info.target_size >= source.stat().st_size and not force_convert:
         shutil.copy2(source, tmp_path)
         return tmp_path
 
     with Image.open(source) as img:
-        if use_avif:
+        if ext == ".avif":
             if img.mode not in ("RGB", "RGBA"):
                 img = img.convert("RGB")
             quality = find_avif_quality(img, file_info.target_size)
