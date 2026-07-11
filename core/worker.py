@@ -3,20 +3,23 @@ core/worker.py
 --------------
 Background compression worker.
 
-For each FileInfo the worker:
-  1. Mirrors the source folder structure inside the output folder.
-  2. Copies the file unchanged if target_size >= original_size.
-  3. Otherwise calls image_compressor or video_compressor.
-  4. On bitrate-too-low ValueError, copies the original with a warning.
+Images are processed in parallel (one thread per logical CPU core) because
+Pillow's quality binary-search is CPU-bound and benefits from concurrency.
+
+Videos are processed sequentially — each ffmpeg subprocess already spawns
+threads for all available cores, so running multiple encodes in parallel
+would only split resources and slow things down.
 
 Cancellation
 ------------
 Call requestInterruption().  The worker checks between files; a running
 ffmpeg encode is NOT killed mid-process — it finishes naturally before the
-worker stops.  The UI should display "Cancelling… (waiting for current
-file to finish)" to set the right expectation.
+worker stops.
 """
+import os
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -39,11 +42,12 @@ class CompressionWorker(QThread):
     all_done(total_original, total_final)  Emitted after every file (or cancel).
     """
 
-    file_started = pyqtSignal(int)
-    file_done    = pyqtSignal(int, int)   # index, final_size_bytes
-    file_error   = pyqtSignal(int, str)   # index, error_message
-    log_message  = pyqtSignal(str)
-    all_done     = pyqtSignal(int, int)   # total_original, total_final
+    file_started  = pyqtSignal(int)
+    file_done     = pyqtSignal(int, int)   # index, final_size_bytes
+    file_error    = pyqtSignal(int, str)   # index, error_message
+    file_progress = pyqtSignal(int, int)   # index, percent 0-100 (video only)
+    log_message   = pyqtSignal(str)
+    all_done      = pyqtSignal(int, int)   # total_original, total_final
 
     def __init__(
         self,
@@ -61,30 +65,32 @@ class CompressionWorker(QThread):
     # ── QThread entry point ───────────────────────────────────────────────────
 
     def run(self) -> None:
-        total_original = 0
+        total_original = sum(f.original_size for f in self.files)
         total_final    = 0
+        total_lock     = threading.Lock()
 
+        # Pre-compute output paths for every file
+        tasks: list[tuple[int, FileInfo, Path]] = []
         for index, f in enumerate(self.files):
-            if self.isInterruptionRequested():
-                self.log_message.emit("\n— Cancelled —")
-                break
-
-            total_original += f.original_size
-
-            # Build output path, mirroring the source folder tree
             try:
                 relative = f.path.relative_to(self.source_folder)
             except ValueError:
                 relative = Path(f.path.name)
-
             output_path = self.output_folder / relative
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # When converting images to AVIF, change the output extension
             if (f.media_type == MediaType.IMAGE
                     and self.settings.image_format == ImageFormat.AVIF):
                 output_path = output_path.with_suffix(".avif")
+            tasks.append((index, f, output_path))
 
+        image_tasks = [(i, f, p) for i, f, p in tasks if f.media_type == MediaType.IMAGE]
+        video_tasks = [(i, f, p) for i, f, p in tasks if f.media_type == MediaType.VIDEO]
+
+        def _process(index: int, f: FileInfo, output_path: Path) -> None:
+            nonlocal total_final
+            if self.isInterruptionRequested():
+                return
+
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             self.file_started.emit(index)
 
             # ── already small enough: copy unchanged ─────────────────────────
@@ -92,16 +98,18 @@ class CompressionWorker(QThread):
                 try:
                     shutil.copy2(f.path, output_path)
                     size = output_path.stat().st_size
-                    total_final += size
+                    with total_lock:
+                        total_final += size
                     self.file_done.emit(index, size)
                     self.log_message.emit(
                         f"  [copied]    {f.path.name}  ({human_readable(size)})"
                     )
                 except OSError as exc:
-                    total_final += f.original_size
+                    with total_lock:
+                        total_final += f.original_size
                     self.file_error.emit(index, str(exc))
                     self.log_message.emit(f"  [error]     {f.path.name}: {exc}")
-                continue
+                return
 
             # ── compress ─────────────────────────────────────────────────────
             self.log_message.emit(f"  [encoding]  {f.path.name}…")
@@ -109,37 +117,58 @@ class CompressionWorker(QThread):
                 if f.media_type == MediaType.IMAGE:
                     final_size = compress_image(f.path, output_path, f.target_size)
                 else:
+                    def _on_progress(pct: int, _idx: int = index) -> None:
+                        self.file_progress.emit(_idx, pct)
                     final_size = compress_video(
-                        f.path, output_path, f.target_size, self.settings.video_codec
+                        f.path, output_path, f.target_size,
+                        self.settings.video_codec,
+                        on_progress=_on_progress,
                     )
 
-                total_final += final_size
+                with total_lock:
+                    total_final += final_size
                 self.file_done.emit(index, final_size)
                 savings = (1 - final_size / f.original_size) * 100
+                over_budget = (
+                    f.media_type == MediaType.VIDEO and final_size > f.target_size
+                )
+                note = "  ⚠ min bitrate applied" if over_budget else ""
                 self.log_message.emit(
                     f"  [done]      {f.path.name}  "
                     f"{human_readable(f.original_size)} → {human_readable(final_size)}"
-                    f"  ({savings:.0f}% savings)"
+                    f"  ({savings:.0f}% savings){note}"
                 )
-
-            except ValueError as exc:
-                # Bitrate too low / target unreachable — fall back to copy
-                self.log_message.emit(
-                    f"  [warning]   {f.path.name}: {exc} — copying original"
-                )
-                try:
-                    shutil.copy2(f.path, output_path)
-                    size = output_path.stat().st_size
-                    total_final += size
-                    self.file_done.emit(index, size)
-                except OSError as copy_exc:
-                    total_final += f.original_size
-                    self.file_error.emit(index, str(copy_exc))
-                    self.log_message.emit(f"  [error]     {f.path.name}: {copy_exc}")
 
             except Exception as exc:  # noqa: BLE001
-                total_final += f.original_size
+                with total_lock:
+                    total_final += f.original_size
                 self.file_error.emit(index, str(exc))
                 self.log_message.emit(f"  [error]     {f.path.name}: {exc}")
 
+        # ── images: parallel across all logical cores ─────────────────────────
+        if image_tasks and not self.isInterruptionRequested():
+            n_workers = max(1, os.cpu_count() or 4)
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                futures = {
+                    pool.submit(_process, i, f, p): (i, f)
+                    for i, f, p in image_tasks
+                }
+                for future in as_completed(futures):
+                    if self.isInterruptionRequested():
+                        break
+                    try:
+                        future.result()
+                    except Exception:  # noqa: BLE001
+                        pass  # errors already handled inside _process
+
+        # ── videos: sequential (each ffmpeg already uses all cores) ──────────
+        for i, f, p in video_tasks:
+            if self.isInterruptionRequested():
+                break
+            _process(i, f, p)
+
+        if self.isInterruptionRequested():
+            self.log_message.emit("\n— Cancelled —")
+
         self.all_done.emit(total_original, total_final)
+

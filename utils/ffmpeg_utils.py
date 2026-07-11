@@ -8,6 +8,8 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -121,29 +123,86 @@ def get_duration_seconds(metadata: dict) -> float:
 def run_ffmpeg(
     args: list[str],
     timeout: int | None = None,
+    progress_cb: Callable[[int], None] | None = None,
 ) -> subprocess.CompletedProcess:
     """
     Run ffmpeg with the given argument list (do not include 'ffmpeg' itself).
 
+    If *progress_cb* is supplied it is called periodically with the encoded
+    output position in milliseconds.  Use this for pass-2 encodes where you
+    want a live progress bar; pass 1 (analysis only) should omit it.
+
     Raises RuntimeError on non-zero exit or if ffmpeg is not found.
-    Returns the CompletedProcess for inspection if needed.
     """
-    cmd = [_ffmpeg_bin("ffmpeg"), "-hide_banner", "-loglevel", "error"] + args
+    _cflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+
+    if progress_cb is None:
+        cmd = [_ffmpeg_bin("ffmpeg"), "-hide_banner", "-loglevel", "error"] + args
+        try:
+            result = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                creationflags=_cflags,
+            )
+        except FileNotFoundError:
+            raise RuntimeError("ffmpeg was not found on PATH.")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("ffmpeg process timed out.")
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg failed:\n{result.stderr.strip()}")
+        return result
+
+    # ── progress mode: inject -progress pipe:1 so ffmpeg streams stats ───────
+    cmd = [
+        _ffmpeg_bin("ffmpeg"), "-hide_banner", "-nostats",
+        "-progress", "pipe:1",
+        "-loglevel", "error",
+    ] + args
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            creationflags=_cflags,
         )
     except FileNotFoundError:
         raise RuntimeError("ffmpeg was not found on PATH.")
+
+    # Drain stderr in a background thread to prevent pipe deadlock
+    stderr_lines: list[str] = []
+
+    def _drain_stderr() -> None:
+        for line in proc.stderr:
+            stderr_lines.append(line)
+
+    drain = threading.Thread(target=_drain_stderr, daemon=True)
+    drain.start()
+
+    # Read progress from stdout — ffmpeg writes "key=value\n" blocks
+    for raw in proc.stdout:
+        line = raw.rstrip()
+        if line.startswith("out_time_us="):
+            try:
+                us = int(line.split("=", 1)[1])
+                if us >= 0:
+                    progress_cb(us // 1000)   # convert µs → ms
+            except (ValueError, IndexError):
+                pass
+
+    try:
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        proc.kill()
         raise RuntimeError("ffmpeg process timed out.")
 
-    if result.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed:\n{result.stderr.strip()}")
+    drain.join(timeout=5)
 
-    return result
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed:\n{''.join(stderr_lines).strip()}")
+
+    return subprocess.CompletedProcess(cmd, proc.returncode, "", "".join(stderr_lines))

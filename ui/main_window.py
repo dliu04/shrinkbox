@@ -473,8 +473,10 @@ class MainWindow(QMainWindow):
             reply = QMessageBox.warning(
                 self, "Some videos can\u2019t reach their target size",
                 f"{len(undershoots)} video file(s) have a target that is too small "
-                f"to compress:\n\n{lines}\n\n"
-                "These files will be copied unchanged at their original size.\n"
+                f"to compress losslessly:\n\n{lines}\n\n"
+                f"These files will be compressed at the minimum bitrate "
+                f"({_MIN_VIDEO_BITRATE_KBPS}\u202fkbps); their output will exceed "
+                f"their target size.\n"
                 "To fix: raise the \u2018Target MB\u2019 value or adjust individual "
                 "targets in the preview panel.\n\nContinue anyway?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,

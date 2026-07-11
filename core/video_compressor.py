@@ -22,6 +22,7 @@ If the source file is already at or below target_bytes it is copied unchanged.
 import os
 import shutil
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from core.compression_settings import VideoCodec
@@ -45,7 +46,7 @@ def _resolve_av1_encoder() -> tuple[str, list[str]]:
     if "libsvtav1" in available:
         return "libsvtav1", ["-preset", "6"]   # SVT-AV1: 0=best, 13=fastest
     if "libaom-av1" in available:
-        return "libaom-av1", ["-cpu-used", "4"]  # libaom: 0=slowest, 8=fastest
+        return "libaom-av1", ["-cpu-used", "8"]  # libaom: 0=slowest, 8=fastest
     raise ValueError(
         "No AV1 encoder is available in this ffmpeg build (tried libsvtav1 and "
         "libaom-av1). The bundled ffmpeg supports AV1; if running from source, "
@@ -72,6 +73,7 @@ def compress_video(
     output: str | Path,
     target_bytes: int,
     codec: VideoCodec = VideoCodec.H264,
+    on_progress: Callable[[int], None] | None = None,
 ) -> int:
     """
     Two-pass encode of *source* to approximately *target_bytes*,
@@ -82,12 +84,12 @@ def compress_video(
         output:       Destination path (.mp4 recommended).
         target_bytes: Maximum desired output size in bytes.
         codec:        VideoCodec.H264 (default) or VideoCodec.AV1.
+        on_progress:  Optional callback called with progress as 0-100 int.
 
     Returns:
         Actual output file size in bytes.
 
     Raises:
-        ValueError:   If the required video bitrate is below MIN_VIDEO_BITRATE_KBPS.
         RuntimeError: If ffmpeg reports an error during encoding.
     """
     source = Path(source)
@@ -102,13 +104,9 @@ def compress_video(
     duration = get_duration_seconds(metadata)
     video_kbps = compute_video_bitrate(target_bytes, duration)
 
-    if video_kbps < MIN_VIDEO_BITRATE_KBPS:
-        raise ValueError(
-            f"Required video bitrate ({video_kbps} kbps) is below the minimum "
-            f"({MIN_VIDEO_BITRATE_KBPS} kbps). "
-            f"The target size is too small for this video "
-            f"({duration:.1f}s duration)."
-        )
+    # Clamp to the minimum usable bitrate rather than refusing to encode.
+    # The output will exceed target_bytes but is far better than the original.
+    video_kbps = max(video_kbps, MIN_VIDEO_BITRATE_KBPS)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         passlogfile = os.path.join(tmpdir, "ffmpeg2pass")
@@ -117,9 +115,9 @@ def compress_video(
             encoder, preset_args = _resolve_av1_encoder()
         else:
             encoder     = "libx264"
-            preset_args = ["-preset", "slow"]
+            preset_args = ["-preset", "medium"]
 
-        # Pass 1 — analysis; no output written
+        # Pass 1 — analysis; no output written (no progress needed)
         run_ffmpeg([
             "-y", "-i", str(source),
             "-c:v", encoder,
@@ -132,17 +130,26 @@ def compress_video(
             "NUL",          # Windows null device
         ])
 
-        # Pass 2 — actual encode
-        run_ffmpeg([
-            "-y", "-i", str(source),
-            "-c:v", encoder,
-            "-b:v", f"{video_kbps}k",
-            *preset_args,
-            "-pass", "2",
-            "-passlogfile", passlogfile,
-            "-c:a", "aac",
-            "-b:a", f"{AUDIO_BITRATE_KBPS}k",
-            str(output),
-        ])
+        # Pass 2 — actual encode; stream progress if caller wants it
+        total_ms = int(duration * 1000)
+
+        def _progress_cb(current_ms: int) -> None:
+            if on_progress and total_ms > 0:
+                on_progress(min(100, int(current_ms * 100 / total_ms)))
+
+        run_ffmpeg(
+            [
+                "-y", "-i", str(source),
+                "-c:v", encoder,
+                "-b:v", f"{video_kbps}k",
+                *preset_args,
+                "-pass", "2",
+                "-passlogfile", passlogfile,
+                "-c:a", "aac",
+                "-b:a", f"{AUDIO_BITRATE_KBPS}k",
+                str(output),
+            ],
+            progress_cb=_progress_cb if on_progress else None,
+        )
 
     return output.stat().st_size

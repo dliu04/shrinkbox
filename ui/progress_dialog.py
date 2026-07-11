@@ -124,13 +124,21 @@ class ProgressDialog(QDialog):
         self._worker.file_started.connect(self._on_file_started)
         self._worker.file_done.connect(self._on_file_done)
         self._worker.file_error.connect(self._on_file_error)
+        self._worker.file_progress.connect(self._on_file_progress)
         self._worker.log_message.connect(self._on_log)
         self._worker.all_done.connect(self._on_all_done)
 
     def _on_file_started(self, index: int) -> None:
         name = self._worker.files[index].path.name
         self._current_lbl.setText(f"Encoding:  {name}")
-        self._file_bar.setRange(0, 0)  # indeterminate during encode
+        # Reset to indeterminate; switches to 0-100 on first file_progress tick
+        self._file_bar.setRange(0, 0)
+        self._file_bar.setValue(0)
+
+    def _on_file_progress(self, _index: int, pct: int) -> None:
+        if self._file_bar.maximum() == 0:
+            self._file_bar.setRange(0, 100)
+        self._file_bar.setValue(pct)
 
     def _on_file_done(self, _index: int, _final_size: int) -> None:
         self._done += 1
