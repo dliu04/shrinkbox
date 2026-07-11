@@ -22,12 +22,14 @@ from pathlib import Path
 from PIL import Image
 
 from .file_scanner import FileInfo
-from .image_compressor import find_jpeg_quality, find_webp_quality
+from .image_compressor import find_avif_quality, find_jpeg_quality, find_webp_quality
 from .video_compressor import (
     AUDIO_BITRATE_KBPS,
     MIN_VIDEO_BITRATE_KBPS,
+    _resolve_av1_encoder,
     compute_video_bitrate,
 )
+from core.compression_settings import CompressionSettings, ImageFormat, VideoCodec
 from utils.ffmpeg_utils import get_duration_seconds, get_video_metadata, run_ffmpeg
 
 PREVIEW_CLIP_SECONDS: int = 5
@@ -35,16 +37,18 @@ PREVIEW_CLIP_SECONDS: int = 5
 
 # ── image ────────────────────────────────────────────────────────────────────
 
-def estimate_image(file_info: FileInfo) -> Path:
+def estimate_image(file_info: FileInfo, settings: CompressionSettings | None = None) -> Path:
     """
     Compress the image described by *file_info* to its target_size and save
-    the result to a temporary file.
+    the result to a temporary file.  If *settings* requests AVIF output the
+    temp file will have a .avif extension and the image is converted.
 
     Returns:
         Path to the temporary file (caller must delete when done).
     """
     source = file_info.path
-    ext = source.suffix.lower()
+    use_avif = settings is not None and settings.image_format == ImageFormat.AVIF
+    ext = ".avif" if use_avif else source.suffix.lower()
 
     tmp = tempfile.NamedTemporaryFile(
         suffix=ext, delete=False, prefix="shrinkbox_preview_"
@@ -52,13 +56,18 @@ def estimate_image(file_info: FileInfo) -> Path:
     tmp_path = Path(tmp.name)
     tmp.close()
 
-    # No compression needed — copy original unchanged
-    if file_info.target_size >= source.stat().st_size:
+    # No compression and no format change — copy original unchanged
+    if file_info.target_size >= source.stat().st_size and not use_avif:
         shutil.copy2(source, tmp_path)
         return tmp_path
 
     with Image.open(source) as img:
-        if ext in (".jpg", ".jpeg"):
+        if use_avif:
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGB")
+            quality = find_avif_quality(img, file_info.target_size)
+            img.save(tmp_path, format="AVIF", quality=quality)
+        elif ext in (".jpg", ".jpeg"):
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
             quality = find_jpeg_quality(img, file_info.target_size)
@@ -107,7 +116,7 @@ def estimate_compressed_size_image(file_info: FileInfo) -> int:
 
 # ── video ────────────────────────────────────────────────────────────────────
 
-def estimate_video(file_info: FileInfo) -> Path:
+def estimate_video(file_info: FileInfo, settings: CompressionSettings | None = None) -> Path:
     """
     Encode the first PREVIEW_CLIP_SECONDS of the video described by *file_info*
     at its target bitrate and save the result to a temporary .mp4 file.
@@ -118,6 +127,19 @@ def estimate_video(file_info: FileInfo) -> Path:
     Returns:
         Path to the temporary .mp4 file (caller must delete when done).
     """
+    use_av1 = settings is not None and settings.video_codec == VideoCodec.AV1
+    if use_av1:
+        _encoder, _prod_args = _resolve_av1_encoder()
+        # Use a much faster preset for the 5-second preview clip.
+        # libsvtav1 preset 10 and libaom-av1 cpu-used 6 are still good quality
+        # but encode in seconds rather than minutes.
+        if _encoder == "libsvtav1":
+            encoder, preset_args = _encoder, ["-preset", "10"]
+        else:  # libaom-av1
+            encoder, preset_args = _encoder, ["-cpu-used", "6"]
+    else:
+        encoder, preset_args = "libx264", ["-preset", "medium"]
+
     source = file_info.path
 
     # No compression needed — clip the original directly at full quality
@@ -156,9 +178,9 @@ def estimate_video(file_info: FileInfo) -> Path:
     run_ffmpeg([
         "-y", "-i", str(source),
         "-t", str(clip_duration),
-        "-c:v", "libx264",
+        "-c:v", encoder,
         "-b:v", f"{video_kbps}k",
-        "-preset", "slow",
+        *preset_args,
         "-c:a", "aac",
         "-b:a", f"{AUDIO_BITRATE_KBPS}k",
         str(tmp_path),

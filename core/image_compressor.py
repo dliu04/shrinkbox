@@ -21,6 +21,7 @@ from PIL import Image
 # ── quality search bounds ────────────────────────────────────────────────────
 _QUALITY_MIN = 1
 _QUALITY_MAX = 95
+_AVIF_QUALITY_MAX = 90   # 100 = lossless; 90 is the practical lossy ceiling
 
 
 # ── public API ───────────────────────────────────────────────────────────────
@@ -58,6 +59,8 @@ def compress_image(
             _save_webp(img, output, target_bytes)
         elif ext == ".png":
             _save_png(img, output, target_bytes)
+        elif ext == ".avif":
+            _save_avif(img, output, target_bytes)
         else:
             # BMP, TIFF, etc. — fall back to JPEG
             _save_jpeg(img, output, target_bytes)
@@ -89,17 +92,32 @@ def find_webp_quality(img: Image.Image, target_bytes: int) -> int:
     )
 
 
+def find_avif_quality(img: Image.Image, target_bytes: int) -> int:
+    """
+    Return the highest AVIF quality (1-90) whose encoded size fits within
+    *target_bytes*.  Quality 100 = lossless; 90 is the practical lossy ceiling.
+    The image is not saved to disk.
+    """
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGB")
+    return _binary_search_quality(
+        lambda q, buf: img.save(buf, format="AVIF", quality=q),
+        target_bytes,
+        hi=_AVIF_QUALITY_MAX,
+    )
+
+
 # ── private helpers ───────────────────────────────────────────────────────────
 
-def _binary_search_quality(save_fn, target_bytes: int) -> int:
+def _binary_search_quality(save_fn, target_bytes: int, *, lo: int = _QUALITY_MIN, hi: int = _QUALITY_MAX) -> int:
     """
-    Binary search for the highest quality in [_QUALITY_MIN, _QUALITY_MAX] such
-    that save_fn(quality, BytesIO_buffer) produces output ≤ target_bytes.
+    Binary search for the highest quality in [lo, hi] such that
+    save_fn(quality, BytesIO_buffer) produces output ≤ target_bytes.
 
     *save_fn* is called as save_fn(quality: int, buf: BytesIO).
-    Returns _QUALITY_MIN if even the lowest quality exceeds target_bytes.
+    Returns lo if even the lowest quality exceeds target_bytes.
     """
-    lo, hi, best = _QUALITY_MIN, _QUALITY_MAX, _QUALITY_MIN
+    best = lo
     while lo <= hi:
         mid = (lo + hi) // 2
         buf = io.BytesIO()
@@ -141,3 +159,10 @@ def _save_png(img: Image.Image, output: Path, target_bytes: int) -> None:
     buf = io.BytesIO()
     quantized.save(buf, format="PNG", optimize=True)
     output.write_bytes(buf.getvalue())
+
+
+def _save_avif(img: Image.Image, output: Path, target_bytes: int) -> None:
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGB")
+    quality = find_avif_quality(img, target_bytes)
+    img.save(output, format="AVIF", quality=quality)

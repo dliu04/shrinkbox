@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QSizePolicy,
     QSpinBox,
     QSplitter,
@@ -40,6 +41,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.budget import distribute_budget
+from core.compression_settings import CompressionSettings, ImageFormat, VideoCodec
 from core.file_scanner import FileInfo, MediaType, scan_folder
 from core.video_compressor import MIN_VIDEO_BITRATE_KBPS as _MIN_VIDEO_BITRATE_KBPS
 from utils.size_utils import human_readable
@@ -92,14 +94,14 @@ class MainWindow(QMainWindow):
 
         from ui.preview_panel import PreviewPanel
         self._splitter = QSplitter(Qt.Orientation.Vertical)
-        self._splitter.setCollapsible(0, True)
         self._splitter.addWidget(self._build_table())
         self._preview_panel = PreviewPanel()
         self._preview_panel.quality_accepted.connect(self._on_quality_accepted)
         self._splitter.addWidget(self._preview_panel)
+        self._splitter.setCollapsible(0, True)
+        self._splitter.setCollapsible(1, True)
         self._splitter.setStretchFactor(0, 3)
         self._splitter.setStretchFactor(1, 2)
-        self._splitter.setCollapsible(1, True)
 
         root.addWidget(self._splitter, stretch=1)
         root.addWidget(self._build_bottom_bar())
@@ -115,6 +117,12 @@ class MainWindow(QMainWindow):
         self._scan_debounce.setSingleShot(True)
         self._scan_debounce.setInterval(800)
         self._scan_debounce.timeout.connect(self._auto_scan)
+
+        # Debounce timer — budget recompute fires 400 ms after target spin settles
+        self._target_debounce = QTimer(self)
+        self._target_debounce.setSingleShot(True)
+        self._target_debounce.setInterval(400)
+        self._target_debounce.timeout.connect(self._on_target_changed)
 
     def _build_controls(self) -> QWidget:
         box = QWidget()
@@ -149,7 +157,7 @@ class MainWindow(QMainWindow):
         self._target_spin.setSuffix(" MB")
         self._target_spin.setFixedWidth(120)
         self._target_spin.setToolTip("Desired total size of the output folder")
-        self._target_spin.valueChanged.connect(self._on_target_changed)
+        self._target_spin.valueChanged.connect(self._on_target_spin_changed)
 
         self._recursive_check = QCheckBox("Include subfolders")
         self._recursive_check.setChecked(True)
@@ -164,6 +172,37 @@ class MainWindow(QMainWindow):
         opts_layout.addStretch()
         opts_layout.addWidget(self._scan_btn)
         form.addRow("", opts)
+
+        # Encoding options row
+        enc = QWidget()
+        enc_layout = QHBoxLayout(enc)
+        enc_layout.setContentsMargins(0, 2, 0, 0)
+        enc_layout.setSpacing(10)
+
+        self._codec_h264 = QRadioButton("H.264")
+        self._codec_h264.setChecked(True)
+        self._codec_h264.setToolTip(
+            "Widest device compatibility; good quality/speed balance"
+        )
+        self._codec_av1 = QRadioButton("AV1")
+        self._codec_av1.setToolTip(
+            "~40% smaller than H.264 at equal quality; slower to encode; "
+            "requires modern players (Windows 11 built-in, VLC 3+)"
+        )
+
+        self._avif_check = QCheckBox("Convert images to AVIF")
+        self._avif_check.setToolTip(
+            "AVIF (AV1 Image Format) — ~50% smaller than JPEG at similar quality. "
+            "Output files will have .avif extension."
+        )
+
+        enc_layout.addWidget(QLabel("Video codec:"))
+        enc_layout.addWidget(self._codec_h264)
+        enc_layout.addWidget(self._codec_av1)
+        enc_layout.addSpacing(20)
+        enc_layout.addWidget(self._avif_check)
+        enc_layout.addStretch()
+        form.addRow("Encoding:", enc)
 
         return box
 
@@ -268,6 +307,10 @@ class MainWindow(QMainWindow):
         if stripped:
             self._scan_debounce.start()
 
+    def _on_target_spin_changed(self) -> None:
+        """Restart the debounce timer on every keystroke; recompute only when typing stops."""
+        self._target_debounce.start()
+
     def _on_target_changed(self) -> None:
         if self._files:
             distribute_budget(self._files, self._target_spin.value())
@@ -351,7 +394,7 @@ class MainWindow(QMainWindow):
         """Called by the debounce timer; loads the selected row into the preview panel."""
         row = self._current_preview_row
         if 0 <= row < len(self._files):
-            self._preview_panel.load_file(self._files[row])
+            self._preview_panel.load_file(self._files[row], self._get_compression_settings())
 
     def _toggle_collapse_files(self) -> None:
         """Toggle the file-table splitter pane between collapsed and expanded."""
@@ -436,6 +479,7 @@ class MainWindow(QMainWindow):
             files=self._files,
             source_folder=source_folder,
             output_folder=output_folder,
+            settings=self._get_compression_settings(),
         )
 
         # Live table status updates from worker signals
@@ -463,6 +507,14 @@ class MainWindow(QMainWindow):
 
         # Reset status column so the table is ready for another run
         self._reset_table_status()
+
+    # ── compression settings ──────────────────────────────────────────────────
+
+    def _get_compression_settings(self) -> CompressionSettings:
+        return CompressionSettings(
+            video_codec=VideoCodec.AV1 if self._codec_av1.isChecked() else VideoCodec.H264,
+            image_format=ImageFormat.AVIF if self._avif_check.isChecked() else ImageFormat.ORIGINAL,
+        )
 
     # ── table helpers ─────────────────────────────────────────────────────────
 
@@ -579,15 +631,20 @@ class MainWindow(QMainWindow):
         s.setValue("target_mb", self._target_spin.value())
         s.setValue("recursive", self._recursive_check.isChecked())
         s.setValue("output_manually_set", self._output_manually_set)
+        s.setValue("video_codec", "av1" if self._codec_av1.isChecked() else "h264")
+        s.setValue("image_avif", self._avif_check.isChecked())
 
     def _restore_settings(self) -> None:
         s = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
-        # Block textChanged signal while restoring to avoid spurious output updates
         self._output_manually_set = s.value("output_manually_set", False, type=bool)
         self._input_edit.setText(s.value("input_folder", "", type=str))
         self._output_edit.setText(s.value("output_folder", "", type=str))
         self._target_spin.setValue(int(s.value("target_mb", 100)))
         self._recursive_check.setChecked(s.value("recursive", True, type=bool))
+        is_av1 = s.value("video_codec", "h264", type=str) == "av1"
+        self._codec_av1.setChecked(is_av1)
+        self._codec_h264.setChecked(not is_av1)
+        self._avif_check.setChecked(s.value("image_avif", False, type=bool))
 
     def closeEvent(self, event) -> None:
         self._preview_panel.cleanup()

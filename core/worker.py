@@ -21,6 +21,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from core.compression_settings import CompressionSettings, ImageFormat
 from core.file_scanner import FileInfo, MediaType
 from core.image_compressor import compress_image
 from core.video_compressor import compress_video
@@ -49,11 +50,13 @@ class CompressionWorker(QThread):
         files: list[FileInfo],
         source_folder: Path,
         output_folder: Path,
+        settings: CompressionSettings | None = None,
     ) -> None:
         super().__init__()
         self.files         = files
         self.source_folder = source_folder
         self.output_folder = output_folder
+        self.settings      = settings or CompressionSettings()
 
     # ── QThread entry point ───────────────────────────────────────────────────
 
@@ -76,6 +79,11 @@ class CompressionWorker(QThread):
 
             output_path = self.output_folder / relative
             output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # When converting images to AVIF, change the output extension
+            if (f.media_type == MediaType.IMAGE
+                    and self.settings.image_format == ImageFormat.AVIF):
+                output_path = output_path.with_suffix(".avif")
 
             self.file_started.emit(index)
 
@@ -101,7 +109,9 @@ class CompressionWorker(QThread):
                 if f.media_type == MediaType.IMAGE:
                     final_size = compress_image(f.path, output_path, f.target_size)
                 else:
-                    final_size = compress_video(f.path, output_path, f.target_size)
+                    final_size = compress_video(
+                        f.path, output_path, f.target_size, self.settings.video_codec
+                    )
 
                 total_final += final_size
                 self.file_done.emit(index, final_size)

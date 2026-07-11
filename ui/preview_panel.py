@@ -48,6 +48,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.estimator import estimate_image, estimate_video
+from core.compression_settings import CompressionSettings
 from core.file_scanner import FileInfo, MediaType
 from utils.size_utils import human_readable
 
@@ -76,6 +77,7 @@ class PreviewPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._fi: FileInfo | None = None
+        self._settings: CompressionSettings | None = None
         self._temp_files: list[Path] = []
         self._worker: "_EncodeWorker | None" = None
         self._setup_ui()
@@ -296,13 +298,14 @@ class PreviewPanel(QWidget):
 
     # ── public API ────────────────────────────────────────────────────────────
 
-    def load_file(self, file_info: FileInfo) -> None:
+    def load_file(self, file_info: FileInfo, settings: CompressionSettings | None = None) -> None:
         """Load a new file and start generating its preview."""
         self._release_player()
         self._cleanup_temp_files()
         self._cancel_worker()
 
         self._fi = copy.copy(file_info)
+        self._settings = settings
         self._set_controls_enabled(True)
         self._slider.setValue(self._pct(self._fi.target_size))
         self._refresh_target_label()
@@ -324,7 +327,12 @@ class PreviewPanel(QWidget):
                 "showing first 5 seconds"
             )
             self._play_btn.setEnabled(False)
-            self._video_status_lbl.setText("Generating preview clip…")
+            codec_note = ""
+            if self._settings is not None:
+                from core.compression_settings import VideoCodec
+                if self._settings.video_codec == VideoCodec.AV1:
+                    codec_note = "  ·  AV1 (may take longer)"
+            self._video_status_lbl.setText(f"Generating preview clip…{codec_note}")
 
         self._schedule_encode()
 
@@ -531,7 +539,7 @@ class PreviewPanel(QWidget):
             return
         self._cancel_worker()
         self._set_loading(True)
-        worker = _EncodeWorker(copy.copy(self._fi))
+        worker = _EncodeWorker(copy.copy(self._fi), self._settings)
         worker.encode_finished.connect(self._on_encode_finished)
         worker.encode_error.connect(self._on_encode_error)
         self._worker = worker
@@ -555,8 +563,24 @@ class PreviewPanel(QWidget):
 
         if self._fi and self._fi.media_type == MediaType.IMAGE:
             px = QPixmap(str(temp_path))
+            if px.isNull():
+                # QPixmap can't load this format natively (e.g. AVIF) — use Pillow
+                try:
+                    import io as _io
+                    from PIL import Image as _PilImage
+                    with _PilImage.open(str(temp_path)) as pil_img:
+                        if pil_img.mode not in ("RGB", "RGBA"):
+                            pil_img = pil_img.convert("RGB")
+                        buf = _io.BytesIO()
+                        pil_img.save(buf, format="PNG")
+                    px = QPixmap()
+                    px.loadFromData(buf.getvalue())
+                except Exception:  # noqa: BLE001
+                    pass
             if not px.isNull():
                 self._comp_img.setPixmap(px)
+            else:
+                self._comp_img.setText("(preview unavailable)")
             size = temp_path.stat().st_size
             self._comp_size_lbl.setText(
                 f"{human_readable(size)}  "
@@ -642,16 +666,17 @@ class _EncodeWorker(QThread):
     encode_finished = pyqtSignal(Path)
     encode_error = pyqtSignal(str)
 
-    def __init__(self, file_info: FileInfo) -> None:
+    def __init__(self, file_info: FileInfo, settings: CompressionSettings | None = None) -> None:
         super().__init__()
         self._fi = file_info
+        self._settings = settings
 
     def run(self) -> None:
         try:
             path = (
-                estimate_image(self._fi)
+                estimate_image(self._fi, self._settings)
                 if self._fi.media_type == MediaType.IMAGE
-                else estimate_video(self._fi)
+                else estimate_video(self._fi, self._settings)
             )
             if self.isInterruptionRequested():
                 path.unlink(missing_ok=True)

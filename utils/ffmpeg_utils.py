@@ -3,6 +3,7 @@ utils/ffmpeg_utils.py
 ---------------------
 Wrappers around ffmpeg and ffprobe subprocess calls.
 """
+import functools
 import json
 import shutil
 import subprocess
@@ -34,6 +35,32 @@ def check_dependencies() -> list[str]:
         if shutil.which(_ffmpeg_bin(tool)) is None:
             missing.append(tool)
     return missing
+
+
+@functools.lru_cache(maxsize=None)
+def get_available_encoders() -> frozenset[str]:
+    """
+    Return the set of video encoder names compiled into this ffmpeg build.
+    Result is cached after the first call.
+    """
+    try:
+        result = subprocess.run(
+            [_ffmpeg_bin("ffmpeg"), "-hide_banner", "-encoders"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        encoders: set[str] = set()
+        for line in result.stdout.splitlines():
+            parts = line.split()
+            # Encoder lines look like: " V..... libx264    ..."
+            if len(parts) >= 2 and len(parts[0]) >= 2 and parts[0][0] in "VA":
+                encoders.add(parts[1])
+        return frozenset(encoders)
+    except Exception:  # noqa: BLE001
+        return frozenset()
 
 
 def get_video_metadata(path: str | Path) -> dict:
