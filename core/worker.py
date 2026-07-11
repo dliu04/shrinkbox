@@ -24,7 +24,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from core.compression_settings import CompressionSettings, ImageFormat
+from core.compression_settings import CompressionSettings, ImageFormat, VideoCodec
 from core.file_scanner import FileInfo, MediaType
 from core.image_compressor import compress_image
 from core.video_compressor import compress_video
@@ -88,9 +88,8 @@ class CompressionWorker(QThread):
                 elif _fmt == ImageFormat.AVIF:
                     output_path = output_path.with_suffix(".avif")
             elif f.media_type == MediaType.VIDEO:
-                from core.compression_settings import VideoCodec
-                # AV1 only muxes into MP4; also normalise other containers to MP4
-                # since we are re-encoding anyway and MP4 has the widest support.
+                # AV1 only muxes into MP4; normalise all re-encodes to MP4
+                # for widest compatibility regardless of source container.
                 if output_path.suffix.lower() != ".mp4":
                     output_path = output_path.with_suffix(".mp4")
 
