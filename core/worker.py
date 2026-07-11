@@ -87,6 +87,12 @@ class CompressionWorker(QThread):
                     output_path = output_path.with_suffix(".webp")
                 elif _fmt == ImageFormat.AVIF:
                     output_path = output_path.with_suffix(".avif")
+            elif f.media_type == MediaType.VIDEO:
+                from core.compression_settings import VideoCodec
+                # AV1 only muxes into MP4; also normalise other containers to MP4
+                # since we are re-encoding anyway and MP4 has the widest support.
+                if output_path.suffix.lower() != ".mp4":
+                    output_path = output_path.with_suffix(".mp4")
 
             tasks.append((index, f, output_path))
 
